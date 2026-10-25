@@ -341,15 +341,32 @@ void TrafficGateApp::UpdateNetworkStats() {
     uint64_t totalIn = 0;
     uint64_t totalOut = 0;
 
+    // GetIfTable2 lists every network adapter several times: once for the adapter
+    // itself and once per driver layer bound to it ("...-QoS Packet Scheduler-0000",
+    // "...-WFP Native MAC Layer LightWeight Filter-0000"), all with the same byte
+    // counts. Virtual and tunnel adapters (VPN, Hyper-V, Wi-Fi Direct) re-count traffic
+    // that also crosses the physical card. Counting only real, non-filter hardware
+    // adapters counts each byte once.
+    uint64_t hwIn = 0, hwOut = 0, anyIn = 0, anyOut = 0;
+    bool foundHardware = false;
     for (ULONG i = 0; i < pTable->NumEntries; ++i) {
         const MIB_IF_ROW2& row = pTable->Table[i];
-        if (row.OperStatus == IfOperStatusUp &&
-            row.Type != IF_TYPE_SOFTWARE_LOOPBACK &&
-            (row.InOctets > 0 || row.OutOctets > 0)) {
-            totalIn += row.InOctets;
-            totalOut += row.OutOctets;
+        if (row.OperStatus != IfOperStatusUp ||
+            row.Type == IF_TYPE_SOFTWARE_LOOPBACK ||
+            row.InterfaceAndOperStatusFlags.FilterInterface) {
+            continue;
+        }
+        anyIn += row.InOctets;
+        anyOut += row.OutOctets;
+        if (row.InterfaceAndOperStatusFlags.HardwareInterface) {
+            foundHardware = true;
+            hwIn += row.InOctets;
+            hwOut += row.OutOctets;
         }
     }
+    // If Windows flags no hardware adapter (unusual), fall back to all non-filter ones.
+    totalIn = foundHardware ? hwIn : anyIn;
+    totalOut = foundHardware ? hwOut : anyOut;
     FreeMibTable(pTable);
 
     // While the limiter is running, measure what it actually delivers. Adapter

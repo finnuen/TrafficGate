@@ -87,7 +87,7 @@ Every non-loopback IP packet is diverted by WinDivert 2.2.2 into one queue and r
 Requires MinGW-w64 (x86_64) with `g++`, `windres` and `objdump` on `PATH`.
 
 ```powershell
-# Build and bump the version (1.11 -> 1.12)
+# Build and bump the version (1.12 -> 1.13)
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 # Build the current version unchanged
