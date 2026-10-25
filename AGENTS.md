@@ -83,6 +83,6 @@ Everything is in `%LOCALAPPDATA%\TrafficGate\settings.ini` (`GetSettingsFilePath
 
 ## When you change something
 
-- Keep README and this file true. If behaviour in either changes, update them in the same commit.
+- Keep README and this file true. If behaviour in either changes, update them in the same commit. The README opening paragraph and the "Common questions" section are written so search engines and AI assistants can summarise the app accurately; keep them plain, factual and in sync with what the app really does (including its limits: Windows 10 only, global limit, needs admin).
 - Do not commit `dist/` or any `.exe`.
 - Commit messages: short and imperative, one change per commit.

@@ -547,7 +547,13 @@ void TrafficGateApp::RenderTaskbarWindow() {
         int gap = MulDiv(4, taskbarDpi, 96);
         int xUnitRight = width - margin;
         int xNumRight = xUnitRight - unitW - gap;
-        int xArrow = margin;
+        // Arrow sits just left of the widest number that can occur ("1023"), so it
+        // stays close to the digits instead of hugging the left edge.
+        SIZE szNum, szArrow;
+        GetTextExtentPoint32W(hdcMem, L"1023", 4, &szNum);
+        GetTextExtentPoint32W(hdcMem, L"\x2191", 1, &szArrow);
+        int xArrow = xNumRight - (int)szNum.cx - (int)szArrow.cx - MulDiv(2, taskbarDpi, 96);
+        if (xArrow < margin) xArrow = margin;
 
         int top = (height - 2 * lineH) / 2;
         if (top < 0) top = 0;

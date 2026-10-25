@@ -33,8 +33,8 @@
 
 // Version definition
 #define APP_NAME            L"TrafficGate"
-#define APP_VERSION         L"1.10"
-#define APP_VERSION_STR     "1.10"
+#define APP_VERSION         L"1.11"
+#define APP_VERSION_STR     "1.11"
 #define APP_MUTEX_NAME      L"Global\\TrafficGate_SingleInstance_Mutex"
 #define APP_WNDCLASS_DAEMON L"TrafficGate_DaemonWnd"
 #define APP_WNDCLASS_TASKBAR L"TrafficGate_TaskbarWnd"

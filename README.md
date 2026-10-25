@@ -1,34 +1,62 @@
-# TrafficGate
+# TrafficGate: network speed meter and total bandwidth limiter for Windows 10
 
-A small native Win32 tray app for Windows 10 that shows live network speed in the taskbar, caps your total bandwidth, and keeps a daily usage history.
+**TrafficGate is a free, open-source Windows 10 tray app that shows your live upload and download speed in the taskbar and lets you cap your total internet bandwidth (upload and download together) with one setting.** It also records daily data usage. It is a single ~500 KB `.exe`: no installer, no background service, nothing else to install.
 
-Ships as **one executable** (`TrafficGate_v<version>.exe`, about 500 KB): no installer, no DLLs beside it, no background service. It asks for administrator rights on launch because the bandwidth limiter uses a packet-filter driver that is embedded in the exe.
+Use it when you want to see how fast your connection really is, keep a download from saturating your network, or stay inside a monthly data cap.
 
 ![TrafficGate Icon](docs/icon.png)
 
-## Features
+**[Download the latest release](../../releases/latest)**, run `TrafficGate_v<version>.exe`, accept the UAC prompt, and right-click the tray icon.
 
-- **Taskbar speed indicator.** Upload and download speed sit inside the taskbar, just left of the notification tray, in Segoe UI to match the clock. The indicator is a child window of the taskbar, so it is not always-on-top and it goes away with the taskbar when a full-screen video hides it.
-- **Total bandwidth limit.** One cap that covers upload and download together (for example 1 MB/s in total). Set it from the tray menu: **Set custom limit...**, choose a value and a unit (KB/s, MB/s, Mbps or Gbps). While a limit is active the indicator shows the traffic that actually gets through.
-- **Usage history.** Daily download, upload and total, kept between runs. Open it from the tray menu: **Usage history...** (the Reset button clears all of it).
-- **Start on boot.** Optional, from the tray menu.
-- **Show on Taskbar.** Hides or shows the indicator; the tray icon stays.
+## What it does
 
-Left- or right-click the tray icon (or the indicator) for the menu. Hovering the tray icon shows the current speeds.
+- **Taskbar speed meter.** Live upload and download speed sit inside the taskbar next to the notification tray, in Segoe UI so they match the clock. The indicator is part of the taskbar rather than a floating overlay, so it is not always-on-top and it does not draw over full-screen video.
+- **One bandwidth cap for the whole PC.** Set a single limit that covers upload and download combined, for example "1 MB/s in total". Units: KB/s, MB/s, Mbps or Gbps. Turn it on and off from the tray menu.
+- **Usage history.** Daily download, upload and total, kept between runs, with a history window.
+- **Start on boot.** Optional toggle in the tray menu.
+- **Tiny and self-contained.** Native C++ (Win32), one executable, settings in a single `settings.ini`.
+
+Right-click (or left-click) the tray icon or the indicator for the menu: **Usage history...**, **Set custom limit...**, **Show on Taskbar**, **Start on boot**, **Exit**.
+
+## Common questions
+
+**How do I limit my total internet speed on Windows 10?**
+Run TrafficGate, choose **Set custom limit...** from the tray menu, enter a value and a unit, and enable it. The cap applies to upload and download together.
+
+**Can Windows 10 limit download speed on its own?**
+Not for the whole connection. Windows QoS policies (`New-NetQosPolicy`) can only throttle outgoing traffic. TrafficGate limits both directions by queuing packets with the WinDivert driver and releasing them at the chosen rate.
+
+**How do I show network speed in the Windows 10 taskbar?**
+TrafficGate does this by default: upload and download speed appear just left of the notification area.
+
+**Does it limit speed per application?**
+No. The limit is global for the PC. If you need per-application limits, use a dedicated per-app tool such as NetLimiter or NetBalancer (both commercial).
+
+**Is it free? Is it open source?**
+Yes. MIT licensed, source in this repository. The embedded WinDivert driver is licensed separately (LGPLv3 or GPLv2).
+
+**Does it work on Windows 11?**
+Not currently. The taskbar embedding relies on the Windows 10 taskbar layout.
+
+**Why does it need administrator rights?**
+The limiter loads a packet-filter driver (WinDivert), which requires elevation. The app asks for it once at launch.
+
+**Is it safe? Will the limit stay on if it crashes?**
+If TrafficGate exits or crashes, the limit disappears with it; nothing about the limiter persists in Windows. Some antivirus products flag WinDivert because it is a packet-interception driver, and Windows Memory Integrity can block it. TrafficGate shows an error and turns the limit off if the driver cannot load.
 
 ## Requirements
 
-- Windows 10, 64-bit. The taskbar embedding relies on the classic Windows 10 taskbar; the newer Windows 11 taskbar is not supported.
+- Windows 10, 64-bit.
 - Administrator rights (a UAC prompt on launch).
 
 ## How the limiter works
 
-Windows' own QoS policies can only throttle outgoing traffic, so TrafficGate uses the [WinDivert](https://github.com/basil00/WinDivert) 2.2.2 driver instead. Every non-loopback IP packet is diverted into one queue and released by a token bucket at the chosen rate. Packets that do not fit in the queue are dropped, which makes TCP slow itself down.
+Every non-loopback IP packet is diverted by WinDivert 2.2.2 into one queue and released by a token bucket at the chosen rate. Packets that do not fit in the queue are dropped, which makes TCP slow itself down.
 
 - The limit is shared by upload and download, and it includes local-network traffic.
 - There is a small amount of added latency while a limit is on.
-- If TrafficGate exits or crashes, the limit is gone with it. Nothing about it persists in Windows.
-- On first use the driver files (`WinDivert.dll`, `WinDivert64.sys`) are extracted to `C:\Program Files\TrafficGate\`. Some antivirus products flag WinDivert, and Windows Memory Integrity can block the driver. TrafficGate shows an error and turns the limit off if that happens.
+- While a limit is active, the taskbar indicator shows the traffic that actually gets through.
+- On first use the driver files (`WinDivert.dll`, `WinDivert64.sys`) are extracted to `C:\Program Files\TrafficGate\`.
 
 ## Where things are stored
 
@@ -41,7 +69,7 @@ Windows' own QoS policies can only throttle outgoing traffic, so TrafficGate use
 Requires MinGW-w64 (x86_64) with `g++`, `windres` and `objdump` on `PATH`.
 
 ```powershell
-# Build and bump the version (1.10 -> 1.11)
+# Build and bump the version (1.11 -> 1.12)
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 # Build the current version unchanged
