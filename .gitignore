@@ -1,0 +1,6 @@
+dist/
+*.o
+*.obj
+*.res
+*.exe
+settings.ini
