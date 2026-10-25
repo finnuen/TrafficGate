@@ -51,7 +51,7 @@ TrafficGate does this by default: upload and download speed appear just left of 
 No. The limit is global for the PC. If you need per-application limits, use a dedicated per-app tool such as NetLimiter or NetBalancer (both commercial).
 
 **Is it free? Is it open source?**
-Yes. MIT licensed, source in this repository. The embedded WinDivert driver is licensed separately (LGPLv3 or GPLv2).
+Yes. Apache License 2.0, source in this repository. The embedded WinDivert driver is licensed separately (LGPLv3 or GPLv2).
 
 **Does it work on Windows 11?**
 Not currently. The taskbar embedding relies on the Windows 10 taskbar layout.
@@ -109,6 +109,6 @@ If you are changing the code, read [AGENTS.md](AGENTS.md) first.
 
 ## Licence
 
-MIT License. Copyright (c) 2026 TrafficGate.
+Apache License 2.0, see [LICENSE](LICENSE). Copyright 2026 finnuen.
 
 The embedded WinDivert driver is licensed separately, under LGPLv3 or GPLv2 at your choice. See `src/third_party/WinDivert-LICENSE.txt`.
