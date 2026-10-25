@@ -29,11 +29,12 @@
 #include <cstdint>
 
 #include "resource.h"
+#include "Shaper.h"
 
 // Version definition
 #define APP_NAME            L"TrafficGate"
-#define APP_VERSION         L"1.2"
-#define APP_VERSION_STR     "1.2"
+#define APP_VERSION         L"1.10"
+#define APP_VERSION_STR     "1.10"
 #define APP_MUTEX_NAME      L"Global\\TrafficGate_SingleInstance_Mutex"
 #define APP_WNDCLASS_DAEMON L"TrafficGate_DaemonWnd"
 #define APP_WNDCLASS_TASKBAR L"TrafficGate_TaskbarWnd"
@@ -78,6 +79,7 @@ public:
     void ResetTodayStats();
 
     // Speed Limiter
+    void ApplySpeedLimit();
     void SetSpeedLimit(uint64_t bps, bool enable, UINT inputVal = 10, int inputUnit = 1);
     bool IsSpeedLimitEnabled() const { return speedLimitEnabled; }
     uint64_t GetSpeedLimitBps() const { return speedLimitBps; }
@@ -85,7 +87,8 @@ public:
     int GetSpeedLimitInputUnit() const { return speedLimitInputUnit; }
 
     // Startup run
-    bool IsRunAtStartupEnabled() const;
+    bool IsRunAtStartupEnabled() const { return startupEnabled; }
+    void RefreshStartupState();
     void ToggleRunAtStartup();
 
     // Taskbar display toggle
@@ -93,6 +96,7 @@ public:
     void ToggleTaskbarVisible();
 
     // UI & Windows
+    void CreateTaskbarWindow();
     void PositionTaskbarWindow();
     void RenderTaskbarWindow();
     void ShowContextMenu(POINT pt);
@@ -134,6 +138,10 @@ private:
     uint64_t prevOutOctets = 0;
     ULONGLONG prevTickMs = 0;
     bool hasBaseline = false;
+    bool lastUsedShaper = false;
+
+    TrafficShaper shaper;
+    bool startupEnabled = false;
 
     // Config options
     bool showTaskbar = true;

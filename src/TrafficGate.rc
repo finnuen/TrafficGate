@@ -4,13 +4,20 @@
 
 IDI_APPICON ICON "TrafficGate.ico"
 
+// Administrator manifest (WinDivert needs it)
+1 24 "TrafficGate.manifest"
+
+// Embedded WinDivert 2.2.2 x64 driver files (extracted at runtime)
+IDR_WINDIVERT_DLL RCDATA "third_party/WinDivert.dll"
+IDR_WINDIVERT_SYS RCDATA "third_party/WinDivert64.sys"
+
 // Custom Limit Dialog
 IDD_CUSTOM_LIMIT DIALOGEX 0, 0, 185, 80
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "TrafficGate - Set Custom Limit"
 FONT 9, "Segoe UI", 400, 0, 0x0
 BEGIN
-    CONTROL         "Enable speed limit", IDC_LIMIT_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 10, 150, 12
+    CONTROL         "Enable total speed limit (up + down)", IDC_LIMIT_ENABLED, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 14, 10, 150, 12
     EDITTEXT        IDC_LIMIT_VALUE, 14, 28, 90, 14, ES_AUTOHSCROLL | ES_NUMBER
     COMBOBOX        IDC_LIMIT_UNIT, 110, 28, 60, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     DEFPUSHBUTTON   "Apply Limit", IDOK, 64, 54, 52, 15
@@ -29,8 +36,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,2,0,0
-PRODUCTVERSION  1,2,0,0
+FILEVERSION     1,10,0,0
+PRODUCTVERSION  1,10,0,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -42,12 +49,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription",  "TrafficGate - Internet Speed & Usage Monitor"
-            VALUE "FileVersion",      "1.2"
+            VALUE "FileVersion",      "1.10"
             VALUE "InternalName",     "TrafficGate"
             VALUE "LegalCopyright",   "Copyright (C) 2026 TrafficGate"
-            VALUE "OriginalFilename", "TrafficGate_v1.2.exe"
+            VALUE "OriginalFilename", "TrafficGate_v1.10.exe"
             VALUE "ProductName",      "TrafficGate"
-            VALUE "ProductVersion",   "1.2"
+            VALUE "ProductVersion",   "1.10"
         END
     END
     BLOCK "VarFileInfo"

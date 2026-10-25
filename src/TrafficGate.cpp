@@ -16,13 +16,17 @@ TrafficGateApp& TrafficGateApp::Instance() {
 }
 
 std::wstring TrafficGateApp::GetSettingsFilePath() const {
-    wchar_t localAppData[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData))) {
-        std::wstring dir = std::wstring(localAppData) + L"\\TrafficGate";
-        CreateDirectoryW(dir.c_str(), nullptr);
-        return dir + L"\\settings.ini";
+    // Always %LOCALAPPDATA%\\TrafficGate\\settings.ini
+    wchar_t localAppData[MAX_PATH] = { 0 };
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, localAppData)) ||
+        !localAppData[0]) {
+        if (!GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH)) {
+            localAppData[0] = L'\0';
+        }
     }
-    return L"settings.ini";
+    std::wstring dir = std::wstring(localAppData) + L"\\TrafficGate";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\settings.ini";
 }
 
 std::wstring TrafficGateApp::GetCurrentDateString() const {
@@ -158,31 +162,91 @@ void TrafficGateApp::ClearUsageHistory() {
     SaveSettings();
 }
 
-bool TrafficGateApp::IsRunAtStartupEnabled() const {
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD type = 0;
-        DWORD cbData = 0;
-        LSTATUS st = RegQueryValueExW(hKey, L"TrafficGate", nullptr, &type, nullptr, &cbData);
-        RegCloseKey(hKey);
-        return (st == ERROR_SUCCESS && cbData > 0);
+// Runs a hidden command line and returns its exit code (-1 on launch failure).
+static int RunHidden(std::wstring cmdLine, bool wait) {
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = { 0 };
+    if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        return -1;
     }
-    return false;
+    DWORD code = 0;
+    if (wait) {
+        WaitForSingleObject(pi.hProcess, 20000);
+        GetExitCodeProcess(pi.hProcess, &code);
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+}
+
+static std::wstring XmlEscape(const std::wstring& in) {
+    std::wstring out;
+    for (wchar_t c : in) {
+        switch (c) {
+            case L'&': out += L"&amp;"; break;
+            case L'<': out += L"&lt;"; break;
+            case L'>': out += L"&gt;"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
+// The app runs elevated, and Windows will not start elevated programs from the
+// HKCU Run key, so "Start on boot" is a logon scheduled task (highest privileges).
+static bool CreateStartupTask() {
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    wchar_t dom[256] = L"", usr[256] = L"";
+    GetEnvironmentVariableW(L"USERDOMAIN", dom, 256);
+    GetEnvironmentVariableW(L"USERNAME", usr, 256);
+    std::wstring user = XmlEscape(std::wstring(dom) + L"\\" + usr);
+
+    std::wstring xml =
+        L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
+        L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">"
+        L"<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + user + L"</UserId></LogonTrigger></Triggers>"
+        L"<Principals><Principal id=\"Author\"><UserId>" + user + L"</UserId>"
+        L"<LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>"
+        L"<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
+        L"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"
+        L"<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"
+        L"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Enabled>true</Enabled></Settings>"
+        L"<Actions Context=\"Author\"><Exec><Command>" + XmlEscape(exePath) + L"</Command></Exec></Actions>"
+        L"</Task>";
+
+    wchar_t tmpDir[MAX_PATH], tmpFile[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmpDir);
+    GetTempFileNameW(tmpDir, L"tg", 0, tmpFile);
+    HANDLE f = CreateFileW(tmpFile, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD w = 0;
+    const WORD bom = 0xFEFF;
+    WriteFile(f, &bom, 2, &w, nullptr);
+    WriteFile(f, xml.c_str(), (DWORD)(xml.size() * sizeof(wchar_t)), &w, nullptr);
+    CloseHandle(f);
+
+    int rc = RunHidden(L"schtasks.exe /Create /TN TrafficGate /XML \"" + std::wstring(tmpFile) + L"\" /F", true);
+    DeleteFileW(tmpFile);
+    return rc == 0;
+}
+
+void TrafficGateApp::RefreshStartupState() {
+    startupEnabled = (RunHidden(L"schtasks.exe /Query /TN TrafficGate", true) == 0);
 }
 
 void TrafficGateApp::ToggleRunAtStartup() {
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
-        if (IsRunAtStartupEnabled()) {
-            RegDeleteValueW(hKey, L"TrafficGate");
-        } else {
-            wchar_t exePath[MAX_PATH];
-            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-            std::wstring quoted = L"\"" + std::wstring(exePath) + L"\"";
-            RegSetValueExW(hKey, L"TrafficGate", 0, REG_SZ, (const BYTE*)quoted.c_str(), (DWORD)((quoted.size() + 1) * sizeof(wchar_t)));
+    if (startupEnabled) {
+        RunHidden(L"schtasks.exe /Delete /TN TrafficGate /F", true);
+    } else {
+        if (!CreateStartupTask()) {
+            MessageBoxW(hDaemonWnd, L"Could not create the startup task.", APP_NAME, MB_OK | MB_ICONWARNING);
         }
-        RegCloseKey(hKey);
     }
+    RefreshStartupState();
 }
 
 void TrafficGateApp::ToggleTaskbarVisible() {
@@ -209,22 +273,21 @@ void TrafficGateApp::SetSpeedLimit(uint64_t bps, bool enable, UINT inputVal, int
     speedLimitInputVal = inputVal;
     speedLimitInputUnit = inputUnit;
     SaveSettings();
+    ApplySpeedLimit();
+}
 
-    std::wstring cmd;
-    if (enable && bps > 0) {
-        cmd = L"-WindowStyle Hidden -Command \"Remove-NetQosPolicy -Name 'TrafficGate_Limit' -Confirm:$false -ErrorAction SilentlyContinue; New-NetQosPolicy -Name 'TrafficGate_Limit' -ThrottleRateActionBitsPerSecond " + std::to_wstring(bps) + L"\"";
-    } else {
-        cmd = L"-WindowStyle Hidden -Command \"Remove-NetQosPolicy -Name 'TrafficGate_Limit' -Confirm:$false -ErrorAction SilentlyContinue\"";
+void TrafficGateApp::ApplySpeedLimit() {
+    shaper.Stop();
+    if (!speedLimitEnabled || speedLimitBps == 0) return;
+
+    std::wstring err;
+    if (!shaper.Start(speedLimitBps, hInst, err)) {
+        speedLimitEnabled = false;
+        speedLimitBps = 0;
+        SaveSettings();
+        MessageBoxW(hDaemonWnd, (L"The speed limit could not be applied.\n\n" + err).c_str(),
+                    APP_NAME, MB_OK | MB_ICONWARNING);
     }
-
-    SHELLEXECUTEINFOW sei = { 0 };
-    sei.cbSize = sizeof(sei);
-    sei.lpVerb = L"runas";
-    sei.lpFile = L"powershell.exe";
-    sei.lpParameters = cmd.c_str();
-    sei.nShow = SW_HIDE;
-    sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
-    ShellExecuteExW(&sei);
 }
 
 void TrafficGateApp::FormatSpeedComponents(uint64_t bytesPerSec, std::wstring& outNum, std::wstring& outUnit) {
@@ -289,6 +352,18 @@ void TrafficGateApp::UpdateNetworkStats() {
     }
     FreeMibTable(pTable);
 
+    // While the limiter is running, measure what it actually delivers. Adapter
+    // counters include packets it drops. Switching source needs a fresh baseline.
+    bool useShaper = shaper.Running();
+    if (useShaper) {
+        totalIn = shaper.DeliveredInboundBytes();
+        totalOut = shaper.DeliveredOutboundBytes();
+    }
+    if (useShaper != lastUsedShaper) {
+        lastUsedShaper = useShaper;
+        hasBaseline = false;
+    }
+
     ULONGLONG now = GetTickCount64();
 
     if (!hasBaseline) {
@@ -332,8 +407,24 @@ void TrafficGateApp::UpdateNetworkStats() {
     }
 }
 
+void TrafficGateApp::CreateTaskbarWindow() {
+    // Created as a hidden top-level window; PositionTaskbarWindow() turns it into
+    // a child of the taskbar (Shell_TrayWnd) so it lives inside the taskbar:
+    // it hides with it (e.g. for full-screen video) and is never topmost.
+    hTaskbarWnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        APP_WNDCLASS_TASKBAR, L"TrafficGateTaskbar",
+        WS_POPUP | WS_CLIPSIBLINGS,
+        0, 0, 80, 40,
+        nullptr, nullptr, hInst, nullptr);
+}
+
 void TrafficGateApp::PositionTaskbarWindow() {
-    if (!hTaskbarWnd) return;
+    // Our window is destroyed together with its parent if Explorer restarts.
+    if (!hTaskbarWnd || !IsWindow(hTaskbarWnd)) {
+        CreateTaskbarWindow();
+        if (!hTaskbarWnd) return;
+    }
 
     HWND hTray = FindWindowW(L"Shell_TrayWnd", nullptr);
     if (!hTray || !IsWindowVisible(hTray)) {
@@ -341,9 +432,12 @@ void TrafficGateApp::PositionTaskbarWindow() {
         return;
     }
 
-    HWND curOwner = GetWindow(hTaskbarWnd, GW_OWNER);
-    if (curOwner != hTray) {
-        SetWindowLongPtrW(hTaskbarWnd, GWLP_HWNDPARENT, (LONG_PTR)hTray);
+    if (GetParent(hTaskbarWnd) != hTray) {
+        // Popup -> child: switch the styles first, then reparent (per SetParent docs).
+        LONG_PTR style = GetWindowLongPtrW(hTaskbarWnd, GWL_STYLE);
+        style = (style & ~(LONG_PTR)WS_POPUP) | WS_CHILD;
+        SetWindowLongPtrW(hTaskbarWnd, GWL_STYLE, style);
+        SetParent(hTaskbarWnd, hTray);
     }
 
     RECT rcTray = { 0 };
@@ -389,12 +483,15 @@ void TrafficGateApp::PositionTaskbarWindow() {
 
     lastTaskbarRect = { x, y, x + width, y + height };
 
-    SetWindowPos(hTaskbarWnd, HWND_TOPMOST, x, y, width, height,
+    // Child windows are positioned in the parent's client coordinates.
+    POINT pt = { x, y };
+    ScreenToClient(hTray, &pt);
+    SetWindowPos(hTaskbarWnd, HWND_TOP, pt.x, pt.y, width, height,
                  SWP_NOACTIVATE | (showTaskbar ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 
 void TrafficGateApp::RenderTaskbarWindow() {
-    if (!hTaskbarWnd || !showTaskbar) return;
+    if (!hTaskbarWnd || !showTaskbar || !IsWindow(hTaskbarWnd)) return;
 
     RECT rc = { 0 };
     GetWindowRect(hTaskbarWnd, &rc);
@@ -420,68 +517,75 @@ void TrafficGateApp::RenderTaskbarWindow() {
     memset(pBits, 0, width * height * 4);
 
     {
-        Graphics g(hdcMem);
-        g.SetTextRenderingHint(TextRenderingHintAntiAlias);
-        g.SetSmoothingMode(SmoothingModeAntiAlias);
+        // Hinted ClearType GDI text on whole-pixel positions, drawn white on black.
+        // Each pixel keeps its ClearType colour channels as premultiplied colour and
+        // uses the strongest channel as alpha, so on a dark taskbar the result is
+        // the same weight and sharpness as ordinary ClearType text.
+        int fontPx = MulDiv(9, taskbarDpi, 72); // 9 pt Segoe UI, as the taskbar clock
+        HFONT hFont = CreateFontW(-fontPx, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ hOldFont = SelectObject(hdcMem, hFont);
+        SetBkMode(hdcMem, TRANSPARENT);
+        SetTextColor(hdcMem, RGB(255, 255, 255));
 
-        float dpiScale = (float)taskbarDpi / 96.0f;
-        // Same bold weight and size as taskbar date and time clock
-        float fontSize = 11.5f * dpiScale;
+        TEXTMETRICW tm;
+        GetTextMetricsW(hdcMem, &tm);
+        int lineH = tm.tmHeight;
 
-        FontFamily fontFamily(L"Segoe UI");
-        Font font(&fontFamily, fontSize, FontStyleBold, UnitPixel);
+        // Widest unit decides where the number column ends.
+        int unitW = 0;
+        {
+            const wchar_t* samples[] = { L"B/s", L"KB/s", L"MB/s", L"GB/s" };
+            for (const wchar_t* t : samples) {
+                SIZE sz;
+                GetTextExtentPoint32W(hdcMem, t, (int)wcslen(t), &sz);
+                if (sz.cx > unitW) unitW = (int)sz.cx;
+            }
+        }
+        int margin = MulDiv(2, taskbarDpi, 96);
+        int gap = MulDiv(4, taskbarDpi, 96);
+        int xUnitRight = width - margin;
+        int xNumRight = xUnitRight - unitW - gap;
+        int xArrow = margin;
 
-        // All elements in crisp white matching date and time
-        SolidBrush whiteBrush(Color(255, 255, 255, 255));
+        int top = (height - 2 * lineH) / 2;
+        if (top < 0) top = 0;
 
-        // Fixed column positions:
-        // Column 1: Static arrows (xArrow)
-        // Column 2: Speed number right-aligned to (xNumRight)
-        // Column 3: Static unit (xUnit)
-        float xArrow = 2.0f * dpiScale;
-        float xNumRight = 46.0f * dpiScale;
-        float xUnit = 49.0f * dpiScale;
+        auto drawLine = [&](int y, const wchar_t* arrow, uint64_t bytesPerSec) {
+            RECT ra = { xArrow, y, xArrow + 3 * fontPx, y + lineH };
+            DrawTextW(hdcMem, arrow, -1, &ra, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
-        float line1Y = (float)height * 0.10f;
-        float line2Y = (float)height * 0.52f;
+            std::wstring num, unit;
+            FormatSpeedComponents(bytesPerSec, num, unit);
+            RECT rn = { 0, y, xNumRight, y + lineH };
+            DrawTextW(hdcMem, num.c_str(), -1, &rn, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+            RECT ru = { xNumRight, y, xUnitRight, y + lineH };
+            DrawTextW(hdcMem, unit.c_str(), -1, &ru, DT_RIGHT | DT_SINGLELINE | DT_NOPREFIX);
+        };
+        drawLine(top, L"\x2191", stats.currentUpBps);
+        drawLine(top + lineH, L"\x2193", stats.currentDownBps);
 
-        // Line 1: Upload (↑    <num> <unit>)
-        PointF ptArrow1(xArrow, line1Y);
-        g.DrawString(L"\x2191", -1, &font, ptArrow1, &whiteBrush);
+        GdiFlush();
+        SelectObject(hdcMem, hOldFont);
+        DeleteObject(hFont);
 
-        std::wstring upNum, upUnit;
-        FormatSpeedComponents(stats.currentUpBps, upNum, upUnit);
-
-        RectF rcNum1;
-        g.MeasureString(upNum.c_str(), -1, &font, PointF(0, 0), &rcNum1);
-        PointF ptNum1(xNumRight - rcNum1.Width, line1Y);
-        g.DrawString(upNum.c_str(), -1, &font, ptNum1, &whiteBrush);
-
-        PointF ptUnit1(xUnit, line1Y);
-        g.DrawString(upUnit.c_str(), -1, &font, ptUnit1, &whiteBrush);
-
-        // Line 2: Download (↓    <num> <unit>)
-        PointF ptArrow2(xArrow, line2Y);
-        g.DrawString(L"\x2193", -1, &font, ptArrow2, &whiteBrush);
-
-        std::wstring downNum, downUnit;
-        FormatSpeedComponents(stats.currentDownBps, downNum, downUnit);
-
-        RectF rcNum2;
-        g.MeasureString(downNum.c_str(), -1, &font, PointF(0, 0), &rcNum2);
-        PointF ptNum2(xNumRight - rcNum2.Width, line2Y);
-        g.DrawString(downNum.c_str(), -1, &font, ptNum2, &whiteBrush);
-
-        PointF ptUnit2(xUnit, line2Y);
-        g.DrawString(downUnit.c_str(), -1, &font, ptUnit2, &whiteBrush);
+        // ClearType channels -> premultiplied colour, alpha = strongest channel.
+        uint32_t* px = (uint32_t*)pBits;
+        for (int i = 0; i < width * height; ++i) {
+            uint32_t v = px[i];
+            uint32_t r = (v >> 16) & 0xFF, gch = (v >> 8) & 0xFF, bl = v & 0xFF;
+            uint32_t a = r > gch ? r : gch;
+            if (bl > a) a = bl;
+            px[i] = (a << 24) | (r << 16) | (gch << 8) | bl;
+        }
     }
 
     POINT ptSrc = { 0, 0 };
-    POINT ptDst = { rc.left, rc.top };
     SIZE wndSize = { width, height };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
 
-    UpdateLayeredWindow(hTaskbarWnd, hdcScreen, &ptDst, &wndSize, hdcMem, &ptSrc, 0, &bf, ULW_ALPHA);
+    UpdateLayeredWindow(hTaskbarWnd, hdcScreen, nullptr, &wndSize, hdcMem, &ptSrc, 0, &bf, ULW_ALPHA);
 
     SelectObject(hdcMem, hOldBmp);
     DeleteObject(hBmp);
@@ -612,27 +716,34 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
             HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
             SendMessageW(hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
+            RECT lrc;
+            GetClientRect(hList, &lrc);
+            int total = (lrc.right - lrc.left);
+            int wDate = total * 28 / 100;
+            int wMid = total * 24 / 100;
+            int wLast = total - wDate - 2 * wMid;
+
             LVCOLUMNW lvc = { 0 };
             lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
 
             lvc.iSubItem = 0;
             lvc.pszText = (LPWSTR)L"Date";
-            lvc.cx = 120;
+            lvc.cx = wDate;
             SendMessageW(hList, LVM_INSERTCOLUMNW, 0, (LPARAM)&lvc);
 
             lvc.iSubItem = 1;
             lvc.pszText = (LPWSTR)L"Download";
-            lvc.cx = 110;
+            lvc.cx = wMid;
             SendMessageW(hList, LVM_INSERTCOLUMNW, 1, (LPARAM)&lvc);
 
             lvc.iSubItem = 2;
             lvc.pszText = (LPWSTR)L"Upload";
-            lvc.cx = 110;
+            lvc.cx = wMid;
             SendMessageW(hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&lvc);
 
             lvc.iSubItem = 3;
             lvc.pszText = (LPWSTR)L"Total";
-            lvc.cx = 110;
+            lvc.cx = wLast;
             SendMessageW(hList, LVM_INSERTCOLUMNW, 3, (LPARAM)&lvc);
 
             if (pApp) {
@@ -658,6 +769,7 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
                     idx++;
                 }
             }
+            ListView_SetColumnWidth(hList, 3, LVSCW_AUTOSIZE_USEHEADER);
             return TRUE;
         }
 
@@ -670,6 +782,7 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
                     }
                     HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
                     SendMessageW(hList, LVM_DELETEALLITEMS, 0, 0);
+                    ListView_SetColumnWidth(hList, 3, LVSCW_AUTOSIZE_USEHEADER);
                 }
                 return TRUE;
             } else if (id == IDOK || id == IDCANCEL) {
@@ -854,17 +967,37 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
     wct.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassExW(&wct);
 
-    HWND hTray = FindWindowW(L"Shell_TrayWnd", nullptr);
-
-    hTaskbarWnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE,
-        APP_WNDCLASS_TASKBAR, L"TrafficGateTaskbar",
-        WS_POPUP | WS_CLIPSIBLINGS,
-        0, 0, 80, 40,
-        hTray, nullptr, hInst, nullptr);
+    CreateTaskbarWindow();
 
     LoadSettings();
     InitTrayIcon();
+
+    // One-time migration from v1.2: the old Windows QoS policy only throttled
+    // uploads; remove it so it does not stack with the new limiter.
+    {
+        std::wstring ini = GetSettingsFilePath();
+        if (GetPrivateProfileIntW(L"TrafficGate", L"LegacyQosRemoved", 0, ini.c_str()) == 0) {
+            RunHidden(L"powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "
+                      L"\"Remove-NetQosPolicy -Name 'TrafficGate_Limit' -Confirm:$false -ErrorAction SilentlyContinue\"", false);
+            WritePrivateProfileStringW(L"TrafficGate", L"LegacyQosRemoved", L"1", ini.c_str());
+        }
+    }
+
+    // Migrate an old HKCU Run entry (it cannot launch an elevated app) to the task.
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                          0, KEY_READ | KEY_WRITE, &hKey) == ERROR_SUCCESS) {
+            if (RegQueryValueExW(hKey, L"TrafficGate", nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                CreateStartupTask();
+                RegDeleteValueW(hKey, L"TrafficGate");
+            }
+            RegCloseKey(hKey);
+        }
+    }
+    RefreshStartupState();
+
+    ApplySpeedLimit();
 
     if (showTaskbar) {
         PositionTaskbarWindow();
@@ -895,6 +1028,7 @@ void TrafficGateApp::Shutdown() {
         KillTimer(hDaemonWnd, IDT_TIMER_WATCH);
     }
     SaveSettings();
+    shaper.Stop();
     RemoveTrayIcon();
 
     if (hTaskbarWnd) {

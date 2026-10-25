@@ -5,6 +5,8 @@
 #endif
 
 #define IDI_APPICON             101
+#define IDR_WINDIVERT_DLL       401
+#define IDR_WINDIVERT_SYS       402
 
 #define IDM_HEADER_VERSION      1000
 #define IDM_USAGE_HISTORY       1003
