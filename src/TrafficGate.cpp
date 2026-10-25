@@ -36,12 +36,14 @@ std::wstring TrafficGateApp::GetCurrentDateString() const {
 void TrafficGateApp::LoadSettings() {
     std::wstring path = GetSettingsFilePath();
     showTaskbar = GetPrivateProfileIntW(L"TrafficGate", L"ShowTaskbar", 1, path.c_str()) != 0;
-    fixedMbUnit = GetPrivateProfileIntW(L"TrafficGate", L"FixedMbUnit", 1, path.c_str()) != 0;
     speedLimitEnabled = GetPrivateProfileIntW(L"TrafficGate", L"SpeedLimitEnabled", 0, path.c_str()) != 0;
 
     wchar_t buf[64] = { 0 };
     GetPrivateProfileStringW(L"TrafficGate", L"SpeedLimitBps", L"0", buf, 64, path.c_str());
     speedLimitBps = _wcstoui64(buf, nullptr, 10);
+
+    speedLimitInputVal = GetPrivateProfileIntW(L"TrafficGate", L"SpeedLimitInputVal", 10, path.c_str());
+    speedLimitInputUnit = GetPrivateProfileIntW(L"TrafficGate", L"SpeedLimitInputUnit", 1, path.c_str());
 
     GetPrivateProfileStringW(L"TrafficGate", L"TodayDate", L"", buf, 64, path.c_str());
     stats.todayDateStr = buf;
@@ -53,7 +55,10 @@ void TrafficGateApp::LoadSettings() {
     stats.todayOutBytes = _wcstoui64(buf, nullptr, 10);
 
     std::wstring curDate = GetCurrentDateString();
-    if (stats.todayDateStr != curDate) {
+    if (stats.todayDateStr.empty()) {
+        stats.todayDateStr = curDate;
+    } else if (stats.todayDateStr != curDate) {
+        SaveTodayHistory();
         stats.todayDateStr = curDate;
         stats.todayInBytes = 0;
         stats.todayOutBytes = 0;
@@ -63,12 +68,17 @@ void TrafficGateApp::LoadSettings() {
 void TrafficGateApp::SaveSettings() {
     std::wstring path = GetSettingsFilePath();
     WritePrivateProfileStringW(L"TrafficGate", L"ShowTaskbar", showTaskbar ? L"1" : L"0", path.c_str());
-    WritePrivateProfileStringW(L"TrafficGate", L"FixedMbUnit", fixedMbUnit ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"TrafficGate", L"SpeedLimitEnabled", speedLimitEnabled ? L"1" : L"0", path.c_str());
 
     wchar_t buf[64];
     swprintf_s(buf, L"%llu", speedLimitBps);
     WritePrivateProfileStringW(L"TrafficGate", L"SpeedLimitBps", buf, path.c_str());
+
+    swprintf_s(buf, L"%u", speedLimitInputVal);
+    WritePrivateProfileStringW(L"TrafficGate", L"SpeedLimitInputVal", buf, path.c_str());
+
+    swprintf_s(buf, L"%d", speedLimitInputUnit);
+    WritePrivateProfileStringW(L"TrafficGate", L"SpeedLimitInputUnit", buf, path.c_str());
 
     WritePrivateProfileStringW(L"TrafficGate", L"TodayDate", stats.todayDateStr.c_str(), path.c_str());
 
@@ -77,6 +87,75 @@ void TrafficGateApp::SaveSettings() {
 
     swprintf_s(buf, L"%llu", stats.todayOutBytes);
     WritePrivateProfileStringW(L"TrafficGate", L"TodayOutBytes", buf, path.c_str());
+
+    SaveTodayHistory();
+}
+
+void TrafficGateApp::SaveTodayHistory() {
+    if (stats.todayDateStr.empty()) return;
+    std::wstring path = GetSettingsFilePath();
+    wchar_t val[128];
+    swprintf_s(val, L"%llu,%llu", stats.todayInBytes, stats.todayOutBytes);
+    WritePrivateProfileStringW(L"History", stats.todayDateStr.c_str(), val, path.c_str());
+}
+
+std::vector<UsageRecord> TrafficGateApp::GetUsageHistory() {
+    std::vector<UsageRecord> records;
+    std::wstring path = GetSettingsFilePath();
+
+    // Read [History] section
+    std::vector<wchar_t> buffer(32768, 0);
+    DWORD len = GetPrivateProfileSectionW(L"History", buffer.data(), (DWORD)buffer.size(), path.c_str());
+
+    bool todayFound = false;
+    if (len > 0) {
+        wchar_t* p = buffer.data();
+        while (*p) {
+            std::wstring line = p;
+            size_t eq = line.find(L'=');
+            if (eq != std::wstring::npos) {
+                std::wstring date = line.substr(0, eq);
+                std::wstring data = line.substr(eq + 1);
+                size_t comma = data.find(L',');
+                if (comma != std::wstring::npos) {
+                    UsageRecord rec;
+                    rec.date = date;
+                    rec.downBytes = _wcstoui64(data.substr(0, comma).c_str(), nullptr, 10);
+                    rec.upBytes = _wcstoui64(data.substr(comma + 1).c_str(), nullptr, 10);
+                    if (rec.date == stats.todayDateStr) {
+                        rec.downBytes = stats.todayInBytes;
+                        rec.upBytes = stats.todayOutBytes;
+                        todayFound = true;
+                    }
+                    records.push_back(rec);
+                }
+            }
+            p += line.length() + 1;
+        }
+    }
+
+    if (!todayFound && !stats.todayDateStr.empty()) {
+        UsageRecord rec;
+        rec.date = stats.todayDateStr;
+        rec.downBytes = stats.todayInBytes;
+        rec.upBytes = stats.todayOutBytes;
+        records.push_back(rec);
+    }
+
+    // Sort descending by date (newest first)
+    std::sort(records.begin(), records.end(), [](const UsageRecord& a, const UsageRecord& b) {
+        return a.date > b.date;
+    });
+
+    return records;
+}
+
+void TrafficGateApp::ClearUsageHistory() {
+    std::wstring path = GetSettingsFilePath();
+    WritePrivateProfileSectionW(L"History", L"", path.c_str());
+    stats.todayInBytes = 0;
+    stats.todayOutBytes = 0;
+    SaveSettings();
 }
 
 bool TrafficGateApp::IsRunAtStartupEnabled() const {
@@ -118,21 +197,17 @@ void TrafficGateApp::ToggleTaskbarVisible() {
     }
 }
 
-void TrafficGateApp::ToggleFixedMbUnit() {
-    fixedMbUnit = !fixedMbUnit;
-    SaveSettings();
-    RenderTaskbarWindow();
-}
-
 void TrafficGateApp::ResetTodayStats() {
     stats.todayInBytes = 0;
     stats.todayOutBytes = 0;
     SaveSettings();
 }
 
-void TrafficGateApp::SetSpeedLimit(uint64_t bps, bool enable) {
+void TrafficGateApp::SetSpeedLimit(uint64_t bps, bool enable, UINT inputVal, int inputUnit) {
     speedLimitEnabled = enable;
     speedLimitBps = enable ? bps : 0;
+    speedLimitInputVal = inputVal;
+    speedLimitInputUnit = inputUnit;
     SaveSettings();
 
     std::wstring cmd;
@@ -142,7 +217,6 @@ void TrafficGateApp::SetSpeedLimit(uint64_t bps, bool enable) {
         cmd = L"-WindowStyle Hidden -Command \"Remove-NetQosPolicy -Name 'TrafficGate_Limit' -Confirm:$false -ErrorAction SilentlyContinue\"";
     }
 
-    // QoS policy modification requires elevation
     SHELLEXECUTEINFOW sei = { 0 };
     sei.cbSize = sizeof(sei);
     sei.lpVerb = L"runas";
@@ -153,69 +227,38 @@ void TrafficGateApp::SetSpeedLimit(uint64_t bps, bool enable) {
     ShellExecuteExW(&sei);
 }
 
-std::wstring TrafficGateApp::FormatSpeed(uint64_t bytesPerSec) {
+void TrafficGateApp::FormatSpeedComponents(uint64_t bytesPerSec, std::wstring& outNum, std::wstring& outUnit) {
     double bps = (double)bytesPerSec;
     wchar_t buf[32];
     if (bps >= 1024.0 * 1024.0 * 1024.0) {
-        swprintf_s(buf, L"%.1f GB/s", bps / (1024.0 * 1024.0 * 1024.0));
+        outUnit = L"GB/s";
+        swprintf_s(buf, L"%.1f", bps / (1024.0 * 1024.0 * 1024.0));
     } else if (bps >= 1024.0 * 1024.0) {
-        if (bps >= 10.0 * 1024.0 * 1024.0) {
-            swprintf_s(buf, L"%.0f MB/s", bps / (1024.0 * 1024.0));
-        } else {
-            swprintf_s(buf, L"%.1f MB/s", bps / (1024.0 * 1024.0));
-        }
-    } else if (bps >= 1024.0) {
-        swprintf_s(buf, L"%.0f KB/s", bps / 1024.0);
-    } else {
-        swprintf_s(buf, L"%llu B/s", bytesPerSec);
-    }
-    return buf;
-}
-
-std::wstring TrafficGateApp::FormatSpeedNumber(uint64_t bytesPerSec, bool fixedMb) {
-    double bps = (double)bytesPerSec;
-    wchar_t buf[32];
-    if (fixedMb) {
+        outUnit = L"MB/s";
         double mb = bps / (1024.0 * 1024.0);
-        if (mb >= 10.0) {
-            swprintf_s(buf, L"%.0f", mb);
-        } else if (mb >= 0.1) {
-            swprintf_s(buf, L"%.1f", mb);
-        } else if (bytesPerSec > 0) {
-            swprintf_s(buf, L"0.1");
-        } else {
-            swprintf_s(buf, L"0");
-        }
+        if (mb >= 10.0) swprintf_s(buf, L"%.0f", mb);
+        else swprintf_s(buf, L"%.1f", mb);
+    } else if (bps >= 1024.0) {
+        outUnit = L"KB/s";
+        swprintf_s(buf, L"%.0f", bps / 1024.0);
     } else {
-        if (bps >= 1024.0 * 1024.0 * 1024.0) {
-            swprintf_s(buf, L"%.1f", bps / (1024.0 * 1024.0 * 1024.0));
-        } else if (bps >= 1024.0 * 1024.0) {
-            double mb = bps / (1024.0 * 1024.0);
-            if (mb >= 10.0) swprintf_s(buf, L"%.0f", mb);
-            else swprintf_s(buf, L"%.1f", mb);
-        } else if (bps >= 1024.0) {
-            swprintf_s(buf, L"%.0f", bps / 1024.0);
-        } else {
-            swprintf_s(buf, L"%llu", bytesPerSec);
-        }
+        outUnit = L"B/s";
+        swprintf_s(buf, L"%llu", bytesPerSec);
     }
-    return buf;
+    outNum = buf;
 }
 
-std::wstring TrafficGateApp::FormatSpeedUnit(uint64_t bytesPerSec, bool fixedMb) {
-    if (fixedMb) return L"MB/s";
-    double bps = (double)bytesPerSec;
-    if (bps >= 1024.0 * 1024.0 * 1024.0) return L"GB/s";
-    if (bps >= 1024.0 * 1024.0) return L"MB/s";
-    if (bps >= 1024.0) return L"KB/s";
-    return L"B/s";
+std::wstring TrafficGateApp::FormatSpeed(uint64_t bytesPerSec) {
+    std::wstring num, unit;
+    FormatSpeedComponents(bytesPerSec, num, unit);
+    return num + L" " + unit;
 }
 
 std::wstring TrafficGateApp::FormatBytes(uint64_t bytes) {
     double b = (double)bytes;
     wchar_t buf[32];
     if (b >= 1024.0 * 1024.0 * 1024.0) {
-        swprintf_s(buf, L"%.2f GB", b / (1024.0 * 1024.0 * 1024.0));
+        swprintf_s(buf, L"%.1f GB", b / (1024.0 * 1024.0 * 1024.0));
     } else if (b >= 1024.0 * 1024.0) {
         swprintf_s(buf, L"%.1f MB", b / (1024.0 * 1024.0));
     } else if (b >= 1024.0) {
@@ -257,7 +300,7 @@ void TrafficGateApp::UpdateNetworkStats() {
     }
 
     ULONGLONG elapsed = now - prevTickMs;
-    if (elapsed < 100) return; // Skip tiny increments
+    if (elapsed < 100) return;
 
     uint64_t deltaIn = (totalIn >= prevInOctets) ? (totalIn - prevInOctets) : 0;
     uint64_t deltaOut = (totalOut >= prevOutOctets) ? (totalOut - prevOutOctets) : 0;
@@ -274,6 +317,7 @@ void TrafficGateApp::UpdateNetworkStats() {
 
     std::wstring curDate = GetCurrentDateString();
     if (curDate != stats.todayDateStr) {
+        SaveTodayHistory();
         stats.todayDateStr = curDate;
         stats.todayInBytes = 0;
         stats.todayOutBytes = 0;
@@ -297,7 +341,6 @@ void TrafficGateApp::PositionTaskbarWindow() {
         return;
     }
 
-    // Ensure hTray is the owner so hTaskbarWnd can never drop behind hTray in Z-order
     HWND curOwner = GetWindow(hTaskbarWnd, GW_OWNER);
     if (curOwner != hTray) {
         SetWindowLongPtrW(hTaskbarWnd, GWLP_HWNDPARENT, (LONG_PTR)hTray);
@@ -310,7 +353,6 @@ void TrafficGateApp::PositionTaskbarWindow() {
     int rightBoundary = 0;
 
     if (hNotify && IsWindowVisible(hNotify)) {
-        // Find the "^" Show hidden icons button inside TrayNotifyWnd
         HWND hChevron = FindWindowExW(hNotify, nullptr, L"Button", nullptr);
         if (hChevron && IsWindowVisible(hChevron)) {
             RECT rcChevron = { 0 };
@@ -347,7 +389,6 @@ void TrafficGateApp::PositionTaskbarWindow() {
 
     lastTaskbarRect = { x, y, x + width, y + height };
 
-    // Always re-assert HWND_TOPMOST so opening the overflow flyout or clicking Explorer never hides it
     SetWindowPos(hTaskbarWnd, HWND_TOPMOST, x, y, width, height,
                  SWP_NOACTIVATE | (showTaskbar ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
@@ -367,7 +408,7 @@ void TrafficGateApp::RenderTaskbarWindow() {
     BITMAPINFO bi = { 0 };
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bi.bmiHeader.biWidth = width;
-    bi.bmiHeader.biHeight = -height; // Top-down
+    bi.bmiHeader.biHeight = -height;
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
@@ -376,7 +417,6 @@ void TrafficGateApp::RenderTaskbarWindow() {
     HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
     HGDIOBJ hOldBmp = SelectObject(hdcMem, hBmp);
 
-    // Transparent background
     memset(pBits, 0, width * height * 4);
 
     {
@@ -385,55 +425,55 @@ void TrafficGateApp::RenderTaskbarWindow() {
         g.SetSmoothingMode(SmoothingModeAntiAlias);
 
         float dpiScale = (float)taskbarDpi / 96.0f;
-        // Same font and size as Windows date and time clock (9pt Segoe UI)
+        // Same bold weight and size as taskbar date and time clock
         float fontSize = 11.5f * dpiScale;
 
         FontFamily fontFamily(L"Segoe UI");
-        Font font(&fontFamily, fontSize, FontStyleRegular, UnitPixel);
+        Font font(&fontFamily, fontSize, FontStyleBold, UnitPixel);
 
-        // Arrows: light cyan / blue
-        // Numbers & Unit: pure white (same as taskbar clock)
-        SolidBrush arrowBrush(Color(255, 68, 182, 255));
-        SolidBrush textBrush(Color(255, 255, 255, 255));
+        // All elements in crisp white matching date and time
+        SolidBrush whiteBrush(Color(255, 255, 255, 255));
 
         // Fixed column positions:
         // Column 1: Static arrows (xArrow)
         // Column 2: Speed number right-aligned to (xNumRight)
         // Column 3: Static unit (xUnit)
         float xArrow = 2.0f * dpiScale;
-        float xNumRight = 48.0f * dpiScale;
-        float xUnit = 51.0f * dpiScale;
+        float xNumRight = 46.0f * dpiScale;
+        float xUnit = 49.0f * dpiScale;
 
         float line1Y = (float)height * 0.10f;
         float line2Y = (float)height * 0.52f;
 
-        // Line 1: Upload (↑    <num> MB/s)
+        // Line 1: Upload (↑    <num> <unit>)
         PointF ptArrow1(xArrow, line1Y);
-        g.DrawString(L"\x2191", -1, &font, ptArrow1, &arrowBrush);
+        g.DrawString(L"\x2191", -1, &font, ptArrow1, &whiteBrush);
 
-        std::wstring upNum = FormatSpeedNumber(stats.currentUpBps, fixedMbUnit);
+        std::wstring upNum, upUnit;
+        FormatSpeedComponents(stats.currentUpBps, upNum, upUnit);
+
         RectF rcNum1;
         g.MeasureString(upNum.c_str(), -1, &font, PointF(0, 0), &rcNum1);
         PointF ptNum1(xNumRight - rcNum1.Width, line1Y);
-        g.DrawString(upNum.c_str(), -1, &font, ptNum1, &textBrush);
+        g.DrawString(upNum.c_str(), -1, &font, ptNum1, &whiteBrush);
 
-        std::wstring upUnit = FormatSpeedUnit(stats.currentUpBps, fixedMbUnit);
         PointF ptUnit1(xUnit, line1Y);
-        g.DrawString(upUnit.c_str(), -1, &font, ptUnit1, &textBrush);
+        g.DrawString(upUnit.c_str(), -1, &font, ptUnit1, &whiteBrush);
 
-        // Line 2: Download (↓    <num> MB/s)
+        // Line 2: Download (↓    <num> <unit>)
         PointF ptArrow2(xArrow, line2Y);
-        g.DrawString(L"\x2193", -1, &font, ptArrow2, &arrowBrush);
+        g.DrawString(L"\x2193", -1, &font, ptArrow2, &whiteBrush);
 
-        std::wstring downNum = FormatSpeedNumber(stats.currentDownBps, fixedMbUnit);
+        std::wstring downNum, downUnit;
+        FormatSpeedComponents(stats.currentDownBps, downNum, downUnit);
+
         RectF rcNum2;
         g.MeasureString(downNum.c_str(), -1, &font, PointF(0, 0), &rcNum2);
         PointF ptNum2(xNumRight - rcNum2.Width, line2Y);
-        g.DrawString(downNum.c_str(), -1, &font, ptNum2, &textBrush);
+        g.DrawString(downNum.c_str(), -1, &font, ptNum2, &whiteBrush);
 
-        std::wstring downUnit = FormatSpeedUnit(stats.currentDownBps, fixedMbUnit);
         PointF ptUnit2(xUnit, line2Y);
-        g.DrawString(downUnit.c_str(), -1, &font, ptUnit2, &textBrush);
+        g.DrawString(downUnit.c_str(), -1, &font, ptUnit2, &whiteBrush);
     }
 
     POINT ptSrc = { 0, 0 };
@@ -452,57 +492,18 @@ void TrafficGateApp::RenderTaskbarWindow() {
 void TrafficGateApp::ShowContextMenu(POINT pt) {
     HMENU hMenu = CreatePopupMenu();
 
-    // 1. Header (Application title & version)
     std::wstring title = std::wstring(APP_NAME) + L" v" + APP_VERSION;
     AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_HEADER_VERSION, title.c_str());
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 2. Current speeds
-    std::wstring upStr = L"  \x2191 Upload:   " + FormatSpeed(stats.currentUpBps);
-    std::wstring downStr = L"  \x2193 Download: " + FormatSpeed(stats.currentDownBps);
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_SPEED_UP, upStr.c_str());
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_SPEED_DOWN, downStr.c_str());
+    AppendMenuW(hMenu, MF_STRING, IDM_USAGE_HISTORY, L"Usage history...");
+    AppendMenuW(hMenu, MF_STRING, IDM_SET_CUSTOM_LIMIT, L"Set custom limit...");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 3. Internet Usage (Requirement 3)
-    std::wstring todayStr = L"  Today:   " + FormatBytes(stats.todayInBytes + stats.todayOutBytes) +
-                            L" (\x2193 " + FormatBytes(stats.todayInBytes) +
-                            L" | \x2191 " + FormatBytes(stats.todayOutBytes) + L")";
-    std::wstring sessionStr = L"  Session: " + FormatBytes(stats.sessionInBytes + stats.sessionOutBytes) +
-                              L" (\x2193 " + FormatBytes(stats.sessionInBytes) +
-                              L" | \x2191 " + FormatBytes(stats.sessionOutBytes) + L")";
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_USAGE_TODAY, todayStr.c_str());
-    AppendMenuW(hMenu, MF_STRING | MF_DISABLED, IDM_USAGE_SESSION, sessionStr.c_str());
-    AppendMenuW(hMenu, MF_STRING, IDM_USAGE_RESET, L"  Reset Today's Stats");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-
-    // 4. Speed Limiter Submenu (Requirement 2)
-    HMENU hSubLimit = CreatePopupMenu();
-    AppendMenuW(hSubLimit, MF_STRING | (!speedLimitEnabled ? MF_CHECKED : MF_UNCHECKED), IDM_LIMIT_OFF, L"Disabled (Unlimited)");
-    AppendMenuW(hSubLimit, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(hSubLimit, MF_STRING | (speedLimitEnabled && speedLimitBps == 8000000ULL ? MF_CHECKED : MF_UNCHECKED), IDM_LIMIT_1MB, L"1 MB/s (8 Mbps)");
-    AppendMenuW(hSubLimit, MF_STRING | (speedLimitEnabled && speedLimitBps == 16000000ULL ? MF_CHECKED : MF_UNCHECKED), IDM_LIMIT_2MB, L"2 MB/s (16 Mbps)");
-    AppendMenuW(hSubLimit, MF_STRING | (speedLimitEnabled && speedLimitBps == 40000000ULL ? MF_CHECKED : MF_UNCHECKED), IDM_LIMIT_5MB, L"5 MB/s (40 Mbps)");
-    AppendMenuW(hSubLimit, MF_STRING | (speedLimitEnabled && speedLimitBps == 80000000ULL ? MF_CHECKED : MF_UNCHECKED), IDM_LIMIT_10MB, L"10 MB/s (80 Mbps)");
-    AppendMenuW(hSubLimit, MF_SEPARATOR, 0, nullptr);
-
-    std::wstring customLabel = L"Set Custom Limit...";
-    if (speedLimitEnabled && speedLimitBps != 8000000ULL && speedLimitBps != 16000000ULL &&
-        speedLimitBps != 40000000ULL && speedLimitBps != 80000000ULL) {
-        customLabel = L"Custom: " + FormatSpeed(speedLimitBps / 8) + L" (Active)";
-    }
-    AppendMenuW(hSubLimit, MF_STRING, IDM_LIMIT_CUSTOM, customLabel.c_str());
-
-    AppendMenuW(hMenu, MF_POPUP, (UINT_PTR)hSubLimit, L"Speed Limiter");
-    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-
-    // 5. Taskbar and Boot Toggles (Requirements 5 & 6)
     AppendMenuW(hMenu, MF_STRING | (showTaskbar ? MF_CHECKED : MF_UNCHECKED), IDM_SHOW_TASKBAR, L"Show on Taskbar");
-    AppendMenuW(hMenu, MF_STRING | (fixedMbUnit ? MF_CHECKED : MF_UNCHECKED), IDM_FIXED_MB_UNIT, L"Fixed MB/s Unit");
-    AppendMenuW(hMenu, MF_STRING | (IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED), IDM_STARTUP_RUN, L"Launch TrafficGate at Windows startup");
+    AppendMenuW(hMenu, MF_STRING | (IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED), IDM_STARTUP_RUN, L"Start on boot");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 6. Exit
     AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"Exit TrafficGate");
 
     SetForegroundWindow(hDaemonWnd);
@@ -519,6 +520,10 @@ void TrafficGateApp::OpenCustomLimitDialog() {
     DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_CUSTOM_LIMIT), hDaemonWnd, CustomLimitDlgProc, (LPARAM)this);
 }
 
+void TrafficGateApp::OpenUsageHistoryDialog() {
+    DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_USAGE_HISTORY), hDaemonWnd, UsageHistoryDlgProc, (LPARAM)this);
+}
+
 INT_PTR CALLBACK TrafficGateApp::CustomLimitDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     static TrafficGateApp* pApp = nullptr;
 
@@ -526,47 +531,149 @@ INT_PTR CALLBACK TrafficGateApp::CustomLimitDlgProc(HWND hDlg, UINT msg, WPARAM 
         case WM_INITDIALOG: {
             pApp = (TrafficGateApp*)lParam;
             HWND hCombo = GetDlgItem(hDlg, IDC_LIMIT_UNIT);
-            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"MB/s");
             SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"KB/s");
-            SendMessageW(hCombo, CB_SETCURSEL, 0, 0);
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"MB/s");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"Mbps");
+            SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"Gbps");
 
-            if (pApp && pApp->IsSpeedLimitEnabled()) {
-                uint64_t bps = pApp->GetSpeedLimitBps();
-                uint64_t bytesPerSec = bps / 8;
-                std::wstring status = L"Active Limit: " + FormatSpeed(bytesPerSec);
-                SetDlgItemTextW(hDlg, IDC_LIMIT_STATUS, status.c_str());
+            if (pApp) {
+                bool enabled = pApp->IsSpeedLimitEnabled();
+                CheckDlgButton(hDlg, IDC_LIMIT_ENABLED, enabled ? BST_CHECKED : BST_UNCHECKED);
+                SetDlgItemInt(hDlg, IDC_LIMIT_VALUE, pApp->GetSpeedLimitInputVal(), FALSE);
+                SendMessageW(hCombo, CB_SETCURSEL, pApp->GetSpeedLimitInputUnit(), 0);
 
-                if (bytesPerSec >= 1024 * 1024) {
-                    SetDlgItemInt(hDlg, IDC_LIMIT_VALUE, (UINT)(bytesPerSec / (1024 * 1024)), FALSE);
-                    SendMessageW(hCombo, CB_SETCURSEL, 0, 0);
-                } else {
-                    SetDlgItemInt(hDlg, IDC_LIMIT_VALUE, (UINT)(bytesPerSec / 1024), FALSE);
-                    SendMessageW(hCombo, CB_SETCURSEL, 1, 0);
-                }
-            } else {
-                SetDlgItemInt(hDlg, IDC_LIMIT_VALUE, 5, FALSE);
+                EnableWindow(GetDlgItem(hDlg, IDC_LIMIT_VALUE), enabled);
+                EnableWindow(hCombo, enabled);
             }
             return TRUE;
         }
 
         case WM_COMMAND: {
             int id = LOWORD(wParam);
+            int code = HIWORD(wParam);
+
+            if (id == IDC_LIMIT_ENABLED && code == BN_CLICKED) {
+                BOOL checked = (IsDlgButtonChecked(hDlg, IDC_LIMIT_ENABLED) == BST_CHECKED);
+                EnableWindow(GetDlgItem(hDlg, IDC_LIMIT_VALUE), checked);
+                EnableWindow(GetDlgItem(hDlg, IDC_LIMIT_UNIT), checked);
+                return TRUE;
+            }
+
             if (id == IDOK) {
+                BOOL checked = (IsDlgButtonChecked(hDlg, IDC_LIMIT_ENABLED) == BST_CHECKED);
                 BOOL translated = FALSE;
                 UINT val = GetDlgItemInt(hDlg, IDC_LIMIT_VALUE, &translated, FALSE);
-                if (translated && val > 0) {
-                    HWND hCombo = GetDlgItem(hDlg, IDC_LIMIT_UNIT);
-                    int sel = (int)SendMessageW(hCombo, CB_GETCURSEL, 0, 0);
-                    uint64_t bytesSec = (sel == 0) ? ((uint64_t)val * 1024ULL * 1024ULL) : ((uint64_t)val * 1024ULL);
-                    uint64_t bps = bytesSec * 8ULL;
-                    if (pApp) {
-                        pApp->SetSpeedLimit(bps, true);
+                if (!translated || val == 0) val = 10;
+
+                HWND hCombo = GetDlgItem(hDlg, IDC_LIMIT_UNIT);
+                int sel = (int)SendMessageW(hCombo, CB_GETCURSEL, 0, 0);
+                if (sel < 0 || sel > 3) sel = 1;
+
+                if (pApp) {
+                    if (checked) {
+                        uint64_t bps = 0;
+                        switch (sel) {
+                            case 0: // KB/s
+                                bps = (uint64_t)val * 1024ULL * 8ULL;
+                                break;
+                            case 1: // MB/s
+                                bps = (uint64_t)val * 1024ULL * 1024ULL * 8ULL;
+                                break;
+                            case 2: // Mbps
+                                bps = (uint64_t)val * 1000000ULL;
+                                break;
+                            case 3: // Gbps
+                                bps = (uint64_t)val * 1000000000ULL;
+                                break;
+                        }
+                        pApp->SetSpeedLimit(bps, true, val, sel);
+                    } else {
+                        pApp->SetSpeedLimit(0, false, val, sel);
                     }
                 }
                 EndDialog(hDlg, IDOK);
                 return TRUE;
             } else if (id == IDCANCEL) {
                 EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
+            break;
+        }
+    }
+    return FALSE;
+}
+
+INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static TrafficGateApp* pApp = nullptr;
+
+    switch (msg) {
+        case WM_INITDIALOG: {
+            pApp = (TrafficGateApp*)lParam;
+            HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
+            SendMessageW(hList, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+            LVCOLUMNW lvc = { 0 };
+            lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+            lvc.iSubItem = 0;
+            lvc.pszText = (LPWSTR)L"Date";
+            lvc.cx = 120;
+            SendMessageW(hList, LVM_INSERTCOLUMNW, 0, (LPARAM)&lvc);
+
+            lvc.iSubItem = 1;
+            lvc.pszText = (LPWSTR)L"Download";
+            lvc.cx = 110;
+            SendMessageW(hList, LVM_INSERTCOLUMNW, 1, (LPARAM)&lvc);
+
+            lvc.iSubItem = 2;
+            lvc.pszText = (LPWSTR)L"Upload";
+            lvc.cx = 110;
+            SendMessageW(hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&lvc);
+
+            lvc.iSubItem = 3;
+            lvc.pszText = (LPWSTR)L"Total";
+            lvc.cx = 110;
+            SendMessageW(hList, LVM_INSERTCOLUMNW, 3, (LPARAM)&lvc);
+
+            if (pApp) {
+                auto history = pApp->GetUsageHistory();
+                int idx = 0;
+                for (const auto& rec : history) {
+                    LVITEMW lvi = { 0 };
+                    lvi.mask = LVIF_TEXT;
+                    lvi.iItem = idx;
+                    lvi.iSubItem = 0;
+                    lvi.pszText = (LPWSTR)rec.date.c_str();
+                    SendMessageW(hList, LVM_INSERTITEMW, 0, (LPARAM)&lvi);
+
+                    std::wstring downStr = FormatBytes(rec.downBytes);
+                    ListView_SetItemText(hList, idx, 1, (LPWSTR)downStr.c_str());
+
+                    std::wstring upStr = FormatBytes(rec.upBytes);
+                    ListView_SetItemText(hList, idx, 2, (LPWSTR)upStr.c_str());
+
+                    std::wstring totStr = FormatBytes(rec.downBytes + rec.upBytes);
+                    ListView_SetItemText(hList, idx, 3, (LPWSTR)totStr.c_str());
+
+                    idx++;
+                }
+            }
+            return TRUE;
+        }
+
+        case WM_COMMAND: {
+            int id = LOWORD(wParam);
+            if (id == IDC_HISTORY_RESET) {
+                if (MessageBoxW(hDlg, L"Clear all recorded internet usage history?", L"TrafficGate", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    if (pApp) {
+                        pApp->ClearUsageHistory();
+                    }
+                    HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
+                    SendMessageW(hList, LVM_DELETEALLITEMS, 0, 0);
+                }
+                return TRUE;
+            } else if (id == IDOK || id == IDCANCEL) {
+                EndDialog(hDlg, IDOK);
                 return TRUE;
             }
             break;
@@ -588,7 +695,7 @@ void TrafficGateApp::InitTrayIcon() {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hAppIcon;
-    wcsncpy_s(nid.szTip, L"TrafficGate v1.0", _TRUNCATE);
+    wcsncpy_s(nid.szTip, L"TrafficGate v1.2", _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -644,46 +751,20 @@ LRESULT CALLBACK TrafficGateApp::DaemonWndProc(HWND hWnd, UINT msg, WPARAM wPara
         case WM_COMMAND: {
             int cmd = LOWORD(wParam);
             switch (cmd) {
+                case IDM_USAGE_HISTORY:
+                    app.OpenUsageHistoryDialog();
+                    break;
+
+                case IDM_SET_CUSTOM_LIMIT:
+                    app.OpenCustomLimitDialog();
+                    break;
+
                 case IDM_SHOW_TASKBAR:
                     app.ToggleTaskbarVisible();
                     break;
 
-                case IDM_FIXED_MB_UNIT:
-                    app.ToggleFixedMbUnit();
-                    break;
-
                 case IDM_STARTUP_RUN:
                     app.ToggleRunAtStartup();
-                    break;
-
-                case IDM_USAGE_RESET:
-                    if (MessageBoxW(hWnd, L"Reset today's download and upload statistics?", L"TrafficGate", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                        app.ResetTodayStats();
-                    }
-                    break;
-
-                case IDM_LIMIT_OFF:
-                    app.SetSpeedLimit(0, false);
-                    break;
-
-                case IDM_LIMIT_1MB:
-                    app.SetSpeedLimit(8000000ULL, true);
-                    break;
-
-                case IDM_LIMIT_2MB:
-                    app.SetSpeedLimit(16000000ULL, true);
-                    break;
-
-                case IDM_LIMIT_5MB:
-                    app.SetSpeedLimit(40000000ULL, true);
-                    break;
-
-                case IDM_LIMIT_10MB:
-                    app.SetSpeedLimit(80000000ULL, true);
-                    break;
-
-                case IDM_LIMIT_CUSTOM:
-                    app.OpenCustomLimitDialog();
                     break;
 
                 case IDM_EXIT:
@@ -747,7 +828,7 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
     // Common Controls
     INITCOMMONCONTROLSEX icex = { 0 };
     icex.dwSize = sizeof(icex);
-    icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+    icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LISTVIEW_CLASSES;
     InitCommonControlsEx(&icex);
 
     wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
