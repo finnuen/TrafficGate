@@ -252,6 +252,7 @@ void TrafficGateApp::ToggleRunAtStartup() {
 void TrafficGateApp::ToggleTaskbarVisible() {
     showTaskbar = !showTaskbar;
     SaveSettings();
+    indicatorWasVisible = false; // force a redraw on the next tick
     if (showTaskbar) {
         PositionTaskbarWindow();
         RenderTaskbarWindow();
@@ -330,6 +331,14 @@ std::wstring TrafficGateApp::FormatBytes(uint64_t bytes) {
         swprintf_s(buf, L"%llu B", bytes);
     }
     return buf;
+}
+
+// True while a full-screen app, D3D game or presentation owns the screen, i.e. the
+// taskbar is covered and drawing the indicator would be wasted work.
+static bool IsFullscreenAppActive() {
+    QUERY_USER_NOTIFICATION_STATE st;
+    if (FAILED(SHQueryUserNotificationState(&st))) return false;
+    return st == QUNS_BUSY || st == QUNS_RUNNING_D3D_FULL_SCREEN || st == QUNS_PRESENTATION_MODE;
 }
 
 void TrafficGateApp::UpdateNetworkStats() {
@@ -418,9 +427,29 @@ void TrafficGateApp::UpdateNetworkStats() {
     stats.todayOutBytes += deltaOut;
 
     UpdateTrayTooltip();
+
+    // Redraw only when something visible changed: the formatted numbers, the DPI,
+    // a recreated window, or the indicator becoming visible again. Nothing is drawn
+    // while the taskbar is hidden or covered by a full-screen app. (Placement is
+    // kept up to date by the 250 ms watchdog timer.)
     if (showTaskbar) {
-        PositionTaskbarWindow();
-        RenderTaskbarWindow();
+        HWND hTray = FindWindowW(L"Shell_TrayWnd", nullptr);
+        bool visible = hTray && IsWindowVisible(hTray) &&
+                       hTaskbarWnd && IsWindowVisible(hTaskbarWnd) &&
+                       !IsFullscreenAppActive();
+        if (visible) {
+            std::wstring upNum, upUnit, downNum, downUnit;
+            FormatSpeedComponents(stats.currentUpBps, upNum, upUnit);
+            FormatSpeedComponents(stats.currentDownBps, downNum, downUnit);
+            std::wstring key = upNum + L"|" + upUnit + L"|" + downNum + L"|" + downUnit +
+                               L"|" + std::to_wstring(taskbarDpi);
+            if (!indicatorWasVisible || hTaskbarWnd != lastRenderedWnd || key != lastRenderKey) {
+                RenderTaskbarWindow();
+                lastRenderKey = key;
+                lastRenderedWnd = hTaskbarWnd;
+            }
+        }
+        indicatorWasVisible = visible;
     }
 }
 
@@ -839,6 +868,8 @@ void TrafficGateApp::UpdateTrayTooltip() {
     std::wstring tip = std::wstring(APP_NAME) + L" v" + APP_VERSION +
                        L"\n\x2191 " + FormatSpeed(stats.currentUpBps) +
                        L"  \x2193 " + FormatSpeed(stats.currentDownBps);
+    if (tip == lastTip) return;
+    lastTip = tip;
     wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
     nid.uFlags = NIF_TIP;
     Shell_NotifyIconW(NIM_MODIFY, &nid);
@@ -1029,7 +1060,7 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
     }
 
     // Poll every 1 second for network stats
-    SetTimer(hDaemonWnd, IDT_TIMER_POLL, 1000, nullptr);
+    SetTimer(hDaemonWnd, IDT_TIMER_POLL, 500, nullptr);
     // Watchdog every 250ms for taskbar position & Z-order
     SetTimer(hDaemonWnd, IDT_TIMER_WATCH, 250, nullptr);
 
