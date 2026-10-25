@@ -8,6 +8,24 @@ Use it when you want to see how fast your connection really is, keep a download 
 
 **[Download the latest release](../../releases/latest)**, run `TrafficGate_v<version>.exe`, accept the UAC prompt, and right-click the tray icon.
 
+## Screenshots
+
+**Live speed in the taskbar**, next to the notification area:
+
+![TrafficGate speed indicator in the Windows 10 taskbar, showing upload and download speed](docs/screenshot-taskbar.png)
+
+**Tray menu**: usage history, custom limit, show or hide the indicator, start on boot, exit.
+
+![TrafficGate tray menu](docs/screenshot-tray-menu.png)
+
+**Set custom limit**: one cap for upload and download together, in KB/s, MB/s, Mbps or Gbps.
+
+![TrafficGate custom limit dialog with total speed limit set to 50 MB/s](docs/screenshot-custom-limit.png)
+
+**Usage history**: daily download, upload and total.
+
+![TrafficGate usage history window](docs/screenshot-usage-history.png)
+
 ## What it does
 
 - **Taskbar speed meter.** Live upload and download speed sit inside the taskbar next to the notification tray, in Segoe UI so they match the clock. The indicator is part of the taskbar rather than a floating overlay, so it is not always-on-top and it does not draw over full-screen video.
