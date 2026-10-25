@@ -36,6 +36,7 @@ std::wstring TrafficGateApp::GetCurrentDateString() const {
 void TrafficGateApp::LoadSettings() {
     std::wstring path = GetSettingsFilePath();
     showTaskbar = GetPrivateProfileIntW(L"TrafficGate", L"ShowTaskbar", 1, path.c_str()) != 0;
+    fixedMbUnit = GetPrivateProfileIntW(L"TrafficGate", L"FixedMbUnit", 1, path.c_str()) != 0;
     speedLimitEnabled = GetPrivateProfileIntW(L"TrafficGate", L"SpeedLimitEnabled", 0, path.c_str()) != 0;
 
     wchar_t buf[64] = { 0 };
@@ -62,6 +63,7 @@ void TrafficGateApp::LoadSettings() {
 void TrafficGateApp::SaveSettings() {
     std::wstring path = GetSettingsFilePath();
     WritePrivateProfileStringW(L"TrafficGate", L"ShowTaskbar", showTaskbar ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"TrafficGate", L"FixedMbUnit", fixedMbUnit ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"TrafficGate", L"SpeedLimitEnabled", speedLimitEnabled ? L"1" : L"0", path.c_str());
 
     wchar_t buf[64];
@@ -116,6 +118,12 @@ void TrafficGateApp::ToggleTaskbarVisible() {
     }
 }
 
+void TrafficGateApp::ToggleFixedMbUnit() {
+    fixedMbUnit = !fixedMbUnit;
+    SaveSettings();
+    RenderTaskbarWindow();
+}
+
 void TrafficGateApp::ResetTodayStats() {
     stats.todayInBytes = 0;
     stats.todayOutBytes = 0;
@@ -162,6 +170,45 @@ std::wstring TrafficGateApp::FormatSpeed(uint64_t bytesPerSec) {
         swprintf_s(buf, L"%llu B/s", bytesPerSec);
     }
     return buf;
+}
+
+std::wstring TrafficGateApp::FormatSpeedNumber(uint64_t bytesPerSec, bool fixedMb) {
+    double bps = (double)bytesPerSec;
+    wchar_t buf[32];
+    if (fixedMb) {
+        double mb = bps / (1024.0 * 1024.0);
+        if (mb >= 10.0) {
+            swprintf_s(buf, L"%.0f", mb);
+        } else if (mb >= 0.1) {
+            swprintf_s(buf, L"%.1f", mb);
+        } else if (bytesPerSec > 0) {
+            swprintf_s(buf, L"0.1");
+        } else {
+            swprintf_s(buf, L"0");
+        }
+    } else {
+        if (bps >= 1024.0 * 1024.0 * 1024.0) {
+            swprintf_s(buf, L"%.1f", bps / (1024.0 * 1024.0 * 1024.0));
+        } else if (bps >= 1024.0 * 1024.0) {
+            double mb = bps / (1024.0 * 1024.0);
+            if (mb >= 10.0) swprintf_s(buf, L"%.0f", mb);
+            else swprintf_s(buf, L"%.1f", mb);
+        } else if (bps >= 1024.0) {
+            swprintf_s(buf, L"%.0f", bps / 1024.0);
+        } else {
+            swprintf_s(buf, L"%llu", bytesPerSec);
+        }
+    }
+    return buf;
+}
+
+std::wstring TrafficGateApp::FormatSpeedUnit(uint64_t bytesPerSec, bool fixedMb) {
+    if (fixedMb) return L"MB/s";
+    double bps = (double)bytesPerSec;
+    if (bps >= 1024.0 * 1024.0 * 1024.0) return L"GB/s";
+    if (bps >= 1024.0 * 1024.0) return L"MB/s";
+    if (bps >= 1024.0) return L"KB/s";
+    return L"B/s";
 }
 
 std::wstring TrafficGateApp::FormatBytes(uint64_t bytes) {
@@ -250,18 +297,32 @@ void TrafficGateApp::PositionTaskbarWindow() {
         return;
     }
 
+    // Ensure hTray is the owner so hTaskbarWnd can never drop behind hTray in Z-order
+    HWND curOwner = GetWindow(hTaskbarWnd, GW_OWNER);
+    if (curOwner != hTray) {
+        SetWindowLongPtrW(hTaskbarWnd, GWLP_HWNDPARENT, (LONG_PTR)hTray);
+    }
+
     RECT rcTray = { 0 };
     GetWindowRect(hTray, &rcTray);
 
     HWND hNotify = FindWindowExW(hTray, nullptr, L"TrayNotifyWnd", nullptr);
-    RECT rcNotify = { 0 };
+    int rightBoundary = 0;
+
     if (hNotify && IsWindowVisible(hNotify)) {
-        GetWindowRect(hNotify, &rcNotify);
+        // Find the "^" Show hidden icons button inside TrayNotifyWnd
+        HWND hChevron = FindWindowExW(hNotify, nullptr, L"Button", nullptr);
+        if (hChevron && IsWindowVisible(hChevron)) {
+            RECT rcChevron = { 0 };
+            GetWindowRect(hChevron, &rcChevron);
+            rightBoundary = rcChevron.left;
+        } else {
+            RECT rcNotify = { 0 };
+            GetWindowRect(hNotify, &rcNotify);
+            rightBoundary = rcNotify.left;
+        }
     } else {
-        // Fallback for custom shells or un-nested layouts
-        rcNotify.left = rcTray.right - 180;
-        rcNotify.top = rcTray.top;
-        rcNotify.bottom = rcTray.bottom;
+        rightBoundary = rcTray.right - 180;
     }
 
     UINT dpi = 96;
@@ -275,22 +336,20 @@ void TrafficGateApp::PositionTaskbarWindow() {
     taskbarDpi = dpi;
 
     float dpiScale = (float)dpi / 96.0f;
-    int width = (int)(92.0f * dpiScale);
+    int width = (int)(80.0f * dpiScale);
     int height = rcTray.bottom - rcTray.top;
     if (height < 32) height = 40;
 
-    int x = rcNotify.left - width - (int)(4.0f * dpiScale);
+    int x = rightBoundary - width - (int)(3.0f * dpiScale);
     int y = rcTray.top;
 
     if (x < rcTray.left) x = rcTray.left;
 
-    RECT curRc = { x, y, x + width, y + height };
-    if (curRc.left != lastTaskbarRect.left || curRc.top != lastTaskbarRect.top ||
-        curRc.right != lastTaskbarRect.right || curRc.bottom != lastTaskbarRect.bottom) {
-        lastTaskbarRect = curRc;
-        SetWindowPos(hTaskbarWnd, HWND_TOPMOST, x, y, width, height,
-                     SWP_NOACTIVATE | (showTaskbar ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
-    }
+    lastTaskbarRect = { x, y, x + width, y + height };
+
+    // Always re-assert HWND_TOPMOST so opening the overflow flyout or clicking Explorer never hides it
+    SetWindowPos(hTaskbarWnd, HWND_TOPMOST, x, y, width, height,
+                 SWP_NOACTIVATE | (showTaskbar ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
 
 void TrafficGateApp::RenderTaskbarWindow() {
@@ -317,7 +376,7 @@ void TrafficGateApp::RenderTaskbarWindow() {
     HBITMAP hBmp = CreateDIBSection(hdcMem, &bi, DIB_RGB_COLORS, &pBits, nullptr, 0);
     HGDIOBJ hOldBmp = SelectObject(hdcMem, hBmp);
 
-    // Fill completely transparent
+    // Transparent background
     memset(pBits, 0, width * height * 4);
 
     {
@@ -326,52 +385,55 @@ void TrafficGateApp::RenderTaskbarWindow() {
         g.SetSmoothingMode(SmoothingModeAntiAlias);
 
         float dpiScale = (float)taskbarDpi / 96.0f;
+        // Same font and size as Windows date and time clock (9pt Segoe UI)
         float fontSize = 11.5f * dpiScale;
 
         FontFamily fontFamily(L"Segoe UI");
         Font font(&fontFamily, fontSize, FontStyleRegular, UnitPixel);
 
-        // Palette matching Image 1:
-        // Arrow: light cyan / blue
-        // Text: white
+        // Arrows: light cyan / blue
+        // Numbers & Unit: pure white (same as taskbar clock)
         SolidBrush arrowBrush(Color(255, 68, 182, 255));
-        SolidBrush textBrush(Color(255, 245, 245, 245));
+        SolidBrush textBrush(Color(255, 255, 255, 255));
 
-        // Format speed text
-        std::wstring upSpeedStr = FormatSpeed(stats.currentUpBps);
-        std::wstring downSpeedStr = FormatSpeed(stats.currentDownBps);
+        // Fixed column positions:
+        // Column 1: Static arrows (xArrow)
+        // Column 2: Speed number right-aligned to (xNumRight)
+        // Column 3: Static unit (xUnit)
+        float xArrow = 2.0f * dpiScale;
+        float xNumRight = 48.0f * dpiScale;
+        float xUnit = 51.0f * dpiScale;
 
-        std::wstring line1Prefix = L"\x2191"; // Up arrow
-        std::wstring line2Prefix = L"\x2193"; // Down arrow
-
-        std::wstring colonText = L" : ";
-
-        float line1Y = (float)height * 0.12f;
+        float line1Y = (float)height * 0.10f;
         float line2Y = (float)height * 0.52f;
-        float startX = 3.0f * dpiScale;
 
-        // Draw Line 1: Upload (↑ : speed)
-        PointF pt1(startX, line1Y);
-        g.DrawString(line1Prefix.c_str(), -1, &font, pt1, &arrowBrush);
+        // Line 1: Upload (↑    <num> MB/s)
+        PointF ptArrow1(xArrow, line1Y);
+        g.DrawString(L"\x2191", -1, &font, ptArrow1, &arrowBrush);
 
-        RectF rcBounds;
-        g.MeasureString(line1Prefix.c_str(), -1, &font, pt1, &rcBounds);
-        float nextX1 = pt1.X + rcBounds.Width - (2.0f * dpiScale);
+        std::wstring upNum = FormatSpeedNumber(stats.currentUpBps, fixedMbUnit);
+        RectF rcNum1;
+        g.MeasureString(upNum.c_str(), -1, &font, PointF(0, 0), &rcNum1);
+        PointF ptNum1(xNumRight - rcNum1.Width, line1Y);
+        g.DrawString(upNum.c_str(), -1, &font, ptNum1, &textBrush);
 
-        PointF ptColon1(nextX1, line1Y);
-        std::wstring fullLine1Text = colonText + upSpeedStr;
-        g.DrawString(fullLine1Text.c_str(), -1, &font, ptColon1, &textBrush);
+        std::wstring upUnit = FormatSpeedUnit(stats.currentUpBps, fixedMbUnit);
+        PointF ptUnit1(xUnit, line1Y);
+        g.DrawString(upUnit.c_str(), -1, &font, ptUnit1, &textBrush);
 
-        // Draw Line 2: Download (↓ : speed)
-        PointF pt2(startX, line2Y);
-        g.DrawString(line2Prefix.c_str(), -1, &font, pt2, &arrowBrush);
+        // Line 2: Download (↓    <num> MB/s)
+        PointF ptArrow2(xArrow, line2Y);
+        g.DrawString(L"\x2193", -1, &font, ptArrow2, &arrowBrush);
 
-        g.MeasureString(line2Prefix.c_str(), -1, &font, pt2, &rcBounds);
-        float nextX2 = pt2.X + rcBounds.Width - (2.0f * dpiScale);
+        std::wstring downNum = FormatSpeedNumber(stats.currentDownBps, fixedMbUnit);
+        RectF rcNum2;
+        g.MeasureString(downNum.c_str(), -1, &font, PointF(0, 0), &rcNum2);
+        PointF ptNum2(xNumRight - rcNum2.Width, line2Y);
+        g.DrawString(downNum.c_str(), -1, &font, ptNum2, &textBrush);
 
-        PointF ptColon2(nextX2, line2Y);
-        std::wstring fullLine2Text = colonText + downSpeedStr;
-        g.DrawString(fullLine2Text.c_str(), -1, &font, ptColon2, &textBrush);
+        std::wstring downUnit = FormatSpeedUnit(stats.currentDownBps, fixedMbUnit);
+        PointF ptUnit2(xUnit, line2Y);
+        g.DrawString(downUnit.c_str(), -1, &font, ptUnit2, &textBrush);
     }
 
     POINT ptSrc = { 0, 0 };
@@ -436,6 +498,7 @@ void TrafficGateApp::ShowContextMenu(POINT pt) {
 
     // 5. Taskbar and Boot Toggles (Requirements 5 & 6)
     AppendMenuW(hMenu, MF_STRING | (showTaskbar ? MF_CHECKED : MF_UNCHECKED), IDM_SHOW_TASKBAR, L"Show on Taskbar");
+    AppendMenuW(hMenu, MF_STRING | (fixedMbUnit ? MF_CHECKED : MF_UNCHECKED), IDM_FIXED_MB_UNIT, L"Fixed MB/s Unit");
     AppendMenuW(hMenu, MF_STRING | (IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED), IDM_STARTUP_RUN, L"Launch TrafficGate at Windows startup");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
@@ -562,6 +625,10 @@ LRESULT CALLBACK TrafficGateApp::DaemonWndProc(HWND hWnd, UINT msg, WPARAM wPara
         case WM_TIMER:
             if (wParam == IDT_TIMER_POLL) {
                 app.UpdateNetworkStats();
+            } else if (wParam == IDT_TIMER_WATCH) {
+                if (app.showTaskbar) {
+                    app.PositionTaskbarWindow();
+                }
             }
             return 0;
 
@@ -579,6 +646,10 @@ LRESULT CALLBACK TrafficGateApp::DaemonWndProc(HWND hWnd, UINT msg, WPARAM wPara
             switch (cmd) {
                 case IDM_SHOW_TASKBAR:
                     app.ToggleTaskbarVisible();
+                    break;
+
+                case IDM_FIXED_MB_UNIT:
+                    app.ToggleFixedMbUnit();
                     break;
 
                 case IDM_STARTUP_RUN:
@@ -702,12 +773,14 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
     wct.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassExW(&wct);
 
+    HWND hTray = FindWindowW(L"Shell_TrayWnd", nullptr);
+
     hTaskbarWnd = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE,
         APP_WNDCLASS_TASKBAR, L"TrafficGateTaskbar",
         WS_POPUP | WS_CLIPSIBLINGS,
-        0, 0, 94, 40,
-        nullptr, nullptr, hInst, nullptr);
+        0, 0, 80, 40,
+        hTray, nullptr, hInst, nullptr);
 
     LoadSettings();
     InitTrayIcon();
@@ -718,8 +791,10 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
         ShowWindow(hTaskbarWnd, SW_SHOWNOACTIVATE);
     }
 
-    // Poll every 1 second
+    // Poll every 1 second for network stats
     SetTimer(hDaemonWnd, IDT_TIMER_POLL, 1000, nullptr);
+    // Watchdog every 250ms for taskbar position & Z-order
+    SetTimer(hDaemonWnd, IDT_TIMER_WATCH, 250, nullptr);
 
     return true;
 }
@@ -736,6 +811,7 @@ int TrafficGateApp::Run() {
 void TrafficGateApp::Shutdown() {
     if (hDaemonWnd) {
         KillTimer(hDaemonWnd, IDT_TIMER_POLL);
+        KillTimer(hDaemonWnd, IDT_TIMER_WATCH);
     }
     SaveSettings();
     RemoveTrayIcon();

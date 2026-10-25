@@ -22,6 +22,7 @@
 
 #define IDM_SHOW_TASKBAR        1020
 #define IDM_STARTUP_RUN         1021
+#define IDM_FIXED_MB_UNIT       1022
 #define IDM_EXIT                1030
 
 #define IDD_CUSTOM_LIMIT        200

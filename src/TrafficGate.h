@@ -32,14 +32,15 @@
 
 // Version definition
 #define APP_NAME            L"TrafficGate"
-#define APP_VERSION         L"1.0"
-#define APP_VERSION_STR     "1.0"
+#define APP_VERSION         L"1.1"
+#define APP_VERSION_STR     "1.1"
 #define APP_MUTEX_NAME      L"Global\\TrafficGate_SingleInstance_Mutex"
 #define APP_WNDCLASS_DAEMON L"TrafficGate_DaemonWnd"
 #define APP_WNDCLASS_TASKBAR L"TrafficGate_TaskbarWnd"
 
 #define WM_TRAYICON         (WM_USER + 101)
 #define IDT_TIMER_POLL      2001
+#define IDT_TIMER_WATCH     2002
 
 struct NetworkUsageStats {
     uint64_t currentUpBps = 0;
@@ -79,6 +80,8 @@ public:
     // Taskbar display toggle
     bool IsTaskbarVisible() const { return showTaskbar; }
     void ToggleTaskbarVisible();
+    bool IsFixedMbUnit() const { return fixedMbUnit; }
+    void ToggleFixedMbUnit();
 
     // UI & Windows
     void PositionTaskbarWindow();
@@ -88,6 +91,8 @@ public:
 
     // Formatting helpers
     static std::wstring FormatSpeed(uint64_t bytesPerSec);
+    static std::wstring FormatSpeedNumber(uint64_t bytesPerSec, bool fixedMb);
+    static std::wstring FormatSpeedUnit(uint64_t bytesPerSec, bool fixedMb);
     static std::wstring FormatBytes(uint64_t bytes);
 
 private:
@@ -122,6 +127,7 @@ private:
 
     // Config options
     bool showTaskbar = true;
+    bool fixedMbUnit = true;
     bool speedLimitEnabled = false;
     uint64_t speedLimitBps = 0; // 0 = unlimited
 
