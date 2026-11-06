@@ -91,7 +91,7 @@ try {
     $libs = @(
         '-lgdiplus', '-lgdi32', '-liphlpapi',
         '-lshlwapi', '-lshell32', '-ladvapi32',
-        '-lcomctl32', '-lole32'
+        '-lcomctl32', '-lole32', '-lwininet'
     )
 
     $srcCpp = Join-Path $PSScriptRoot 'src\TrafficGate.cpp'

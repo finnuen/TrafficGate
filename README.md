@@ -4,8 +4,6 @@
 
 Use it when you want to see how fast your connection really is, keep a download from saturating your network, or stay inside a monthly data cap.
 
-![TrafficGate Icon](docs/icon.png)
-
 **[Download the latest release](../../releases/latest)**, run `TrafficGate.exe`, accept the UAC prompt, and right-click the tray icon.
 
 ## Screenshots
@@ -14,7 +12,7 @@ Use it when you want to see how fast your connection really is, keep a download 
 
 ![TrafficGate speed indicator in the Windows 10 taskbar, showing upload and download speed](docs/screenshot-taskbar.png)
 
-**Tray menu**: usage history, custom limit, show or hide the indicator, start on boot, exit.
+**Tray menu**: usage history, custom limit, show or hide the indicator, start on boot, check for updates, restart, exit.
 
 ![TrafficGate tray menu](docs/screenshot-tray-menu.png)
 
@@ -22,7 +20,7 @@ Use it when you want to see how fast your connection really is, keep a download 
 
 ![TrafficGate custom limit dialog with total speed limit set to 50 MB/s](docs/screenshot-custom-limit.png)
 
-**Usage history**: daily download, upload and total.
+**Usage history**: daily download, upload and combined total with an all-time summary row.
 
 ![TrafficGate usage history window](docs/screenshot-usage-history.png)
 
@@ -30,11 +28,11 @@ Use it when you want to see how fast your connection really is, keep a download 
 
 - **Taskbar speed meter.** Live upload and download speed sit inside the taskbar next to the notification tray, in Segoe UI so they match the clock. The indicator is part of the taskbar rather than a floating overlay, so it is not always-on-top and it does not draw over full-screen video.
 - **One bandwidth cap for the whole PC.** Set a single limit that covers upload and download combined, for example "1 MB/s in total". Units: KB/s, MB/s, Mbps or Gbps. Turn it on and off from the tray menu.
-- **Usage history.** Daily download, upload and total, kept between runs, with a history window.
+- **Usage history.** Daily download, upload and combined total with a pinned all-time summary row, kept between runs, with a history window.
 - **Start on boot.** Optional toggle in the tray menu.
 - **Tiny and self-contained.** Native C++ (Win32), one executable, settings in a single `settings.ini`.
 
-Right-click (or left-click) the tray icon or the indicator for the menu: **Usage history...**, **Set custom limit...**, **Show on Taskbar**, **Start on boot**, **Exit**.
+Right-click (or left-click) the tray icon or the indicator for the menu: **Usage history...**, **Set custom limit...**, **Show on Taskbar**, **Start on boot**, **Check for updates...**, **Restart TrafficGate**, **Exit TrafficGate**.
 
 ## Common questions
 

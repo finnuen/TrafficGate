@@ -23,18 +23,20 @@
 #include <shlwapi.h>
 #include <gdiplus.h>
 #include <commctrl.h>
+#include <wininet.h>
 
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <atomic>
 
 #include "resource.h"
 #include "Shaper.h"
 
 // Version definition
 #define APP_NAME            L"TrafficGate"
-#define APP_VERSION         L"1.13"
-#define APP_VERSION_STR     "1.13"
+#define APP_VERSION         L"1.16"
+#define APP_VERSION_STR     "1.16"
 #define APP_MUTEX_NAME      L"Global\\TrafficGate_SingleInstance_Mutex"
 #define APP_WNDCLASS_DAEMON L"TrafficGate_DaemonWnd"
 #define APP_WNDCLASS_TASKBAR L"TrafficGate_TaskbarWnd"
@@ -102,6 +104,8 @@ public:
     void ShowContextMenu(POINT pt);
     void OpenCustomLimitDialog();
     void OpenUsageHistoryDialog();
+    void Restart();
+    void CheckForUpdates(bool silentIfLatest = false);
 
     // Formatting helpers
     static void FormatSpeedComponents(uint64_t bytesPerSec, std::wstring& outNum, std::wstring& outUnit);
@@ -116,6 +120,8 @@ private:
     static LRESULT CALLBACK TaskbarWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
     static INT_PTR CALLBACK CustomLimitDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
     static INT_PTR CALLBACK UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK FooterWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static DWORD WINAPI UpdateCheckThread(LPVOID param);
 
     std::wstring GetSettingsFilePath() const;
     std::wstring GetCurrentDateString() const;
@@ -157,4 +163,6 @@ private:
     // Taskbar window state
     RECT lastTaskbarRect = { 0 };
     int taskbarDpi = 96;
+
+    std::atomic<bool> isCheckingUpdate{false};
 };

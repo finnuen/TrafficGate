@@ -660,6 +660,8 @@ void TrafficGateApp::ShowContextMenu(POINT pt) {
     AppendMenuW(hMenu, MF_STRING | (IsRunAtStartupEnabled() ? MF_CHECKED : MF_UNCHECKED), IDM_STARTUP_RUN, L"Start on boot");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
+    AppendMenuW(hMenu, MF_STRING, IDM_CHECK_UPDATE, L"Check for updates...");
+    AppendMenuW(hMenu, MF_STRING, IDM_RESTART, L"Restart TrafficGate");
     AppendMenuW(hMenu, MF_STRING, IDM_EXIT, L"Exit TrafficGate");
 
     SetForegroundWindow(hDaemonWnd);
@@ -678,6 +680,162 @@ void TrafficGateApp::OpenCustomLimitDialog() {
 
 void TrafficGateApp::OpenUsageHistoryDialog() {
     DialogBoxParamW(hInst, MAKEINTRESOURCEW(IDD_USAGE_HISTORY), hDaemonWnd, UsageHistoryDlgProc, (LPARAM)this);
+}
+
+void TrafficGateApp::Restart() {
+    SaveTodayHistory();
+    SaveSettings();
+    RemoveTrayIcon();
+    if (hMutex) {
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+        hMutex = nullptr;
+    }
+
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    DWORD pid = GetCurrentProcessId();
+
+    wchar_t cmdLine[MAX_PATH * 2 + 256];
+    swprintf_s(cmdLine,
+        L"powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "
+        L"\"Stop-Process -Id %lu -Force -ErrorAction SilentlyContinue; Wait-Process -Id %lu -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300; Start-Process -FilePath '%s'\"",
+        pid, pid, exePath);
+
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = { 0 };
+
+    if (CreateProcessW(nullptr, cmdLine, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
+    TerminateProcess(GetCurrentProcess(), 0);
+}
+
+static bool IsRemoteVersionNewer(const std::wstring& remoteTag, const std::wstring& currentVer) {
+    auto parse = [](const std::wstring& s) {
+        std::vector<int> parts;
+        size_t start = 0;
+        if (!s.empty() && (s[0] == L'v' || s[0] == L'V')) start = 1;
+        while (start < s.size()) {
+            size_t dot = s.find_first_of(L".-", start);
+            std::wstring token = (dot == std::wstring::npos) ? s.substr(start) : s.substr(start, dot - start);
+            parts.push_back(_wtoi(token.c_str()));
+            if (dot == std::wstring::npos) break;
+            start = dot + 1;
+        }
+        return parts;
+    };
+
+    auto r = parse(remoteTag);
+    auto c = parse(currentVer);
+    size_t len = (r.size() > c.size()) ? r.size() : c.size();
+    for (size_t i = 0; i < len; i++) {
+        int rVal = (i < r.size()) ? r[i] : 0;
+        int cVal = (i < c.size()) ? c[i] : 0;
+        if (rVal > cVal) return true;
+        if (rVal < cVal) return false;
+    }
+    return false;
+}
+
+static std::wstring ExtractJsonField(const std::string& json, const std::string& field) {
+    std::string key = "\"" + field + "\":\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) {
+        key = "\"" + field + "\": \"";
+        pos = json.find(key);
+    }
+    if (pos == std::string::npos) return L"";
+    pos += key.length();
+    size_t end = json.find('"', pos);
+    if (end == std::string::npos) return L"";
+    std::string val = json.substr(pos, end - pos);
+    return std::wstring(val.begin(), val.end());
+}
+
+struct UpdateCheckContext {
+    TrafficGateApp* app;
+    bool silentIfLatest;
+};
+
+DWORD WINAPI TrafficGateApp::UpdateCheckThread(LPVOID param) {
+    UpdateCheckContext* ctx = (UpdateCheckContext*)param;
+    TrafficGateApp* pApp = ctx->app;
+    bool silentIfLatest = ctx->silentIfLatest;
+    delete ctx;
+
+    HINTERNET hInternet = InternetOpenW(L"TrafficGate", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
+    bool checkOk = false;
+    std::wstring remoteTag;
+    std::wstring releaseUrl = L"https://github.com/finnuen/TrafficGate/releases/latest";
+
+    if (hInternet) {
+        HINTERNET hUrl = InternetOpenUrlW(hInternet,
+            L"https://api.github.com/repos/finnuen/TrafficGate/releases/latest",
+            L"User-Agent: TrafficGate\r\nAccept: application/vnd.github.v3+json\r\n", -1,
+            INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE, 0);
+        if (hUrl) {
+            std::string resp;
+            char buf[1024];
+            DWORD bytesRead = 0;
+            while (InternetReadFile(hUrl, buf, sizeof(buf) - 1, &bytesRead) && bytesRead > 0) {
+                buf[bytesRead] = '\0';
+                resp += buf;
+            }
+            InternetCloseHandle(hUrl);
+
+            remoteTag = ExtractJsonField(resp, "tag_name");
+            std::wstring foundUrl = ExtractJsonField(resp, "html_url");
+            if (!foundUrl.empty()) releaseUrl = foundUrl;
+            if (!remoteTag.empty()) checkOk = true;
+        }
+        InternetCloseHandle(hInternet);
+    }
+
+    pApp->isCheckingUpdate.store(false);
+
+    if (!checkOk) {
+        if (!silentIfLatest) {
+            MessageBoxW(nullptr,
+                L"Could not check for updates.\nPlease check your internet connection.",
+                L"TrafficGate", MB_OK | MB_ICONWARNING);
+        }
+        return 0;
+    }
+
+    if (IsRemoteVersionNewer(remoteTag, APP_VERSION)) {
+        std::wstring msg = L"A new version of TrafficGate is available!\n\n"
+                           L"Current version: v" + std::wstring(APP_VERSION) + L"\n"
+                           L"Latest version: " + (remoteTag[0] == L'v' || remoteTag[0] == L'V' ? remoteTag : L"v" + remoteTag) + L"\n\n"
+                           L"Do you want to visit the release page to download it?";
+        if (MessageBoxW(nullptr, msg.c_str(), L"TrafficGate Update", MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            ShellExecuteW(nullptr, L"open", releaseUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    } else {
+        if (!silentIfLatest) {
+            std::wstring msg = L"TrafficGate is up to date (v" + std::wstring(APP_VERSION) + L").";
+            MessageBoxW(nullptr, msg.c_str(), L"TrafficGate", MB_OK | MB_ICONINFORMATION);
+        }
+    }
+    return 0;
+}
+
+void TrafficGateApp::CheckForUpdates(bool silentIfLatest) {
+    if (isCheckingUpdate.exchange(true)) {
+        return;
+    }
+    UpdateCheckContext* ctx = new UpdateCheckContext{ this, silentIfLatest };
+    HANDLE hThread = CreateThread(nullptr, 0, UpdateCheckThread, ctx, 0, nullptr);
+    if (hThread) {
+        CloseHandle(hThread);
+    } else {
+        delete ctx;
+        isCheckingUpdate.store(false);
+    }
 }
 
 INT_PTR CALLBACK TrafficGateApp::CustomLimitDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -759,6 +917,102 @@ INT_PTR CALLBACK TrafficGateApp::CustomLimitDlgProc(HWND hDlg, UINT msg, WPARAM 
     return FALSE;
 }
 
+struct HistoryFooterData {
+    HWND hList = nullptr;
+    std::wstring allTimeStr = L"All time";
+    std::wstring downStr;
+    std::wstring upStr;
+    std::wstring totalStr;
+};
+
+LRESULT CALLBACK TrafficGateApp::FooterWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HistoryFooterData* pData = (HistoryFooterData*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+
+    switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+
+            HDC memDC = CreateCompatibleDC(hdc);
+            HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+            HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, memBmp);
+
+            FillRect(memDC, &rc, GetSysColorBrush(COLOR_WINDOW));
+
+            HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(229, 229, 229));
+            HPEN oldPen = (HPEN)SelectObject(memDC, gridPen);
+
+            // Top divider gridline separating from rows above
+            MoveToEx(memDC, 0, 0, nullptr);
+            LineTo(memDC, rc.right, 0);
+
+            if (pData && pData->hList) {
+                HFONT hFont = (HFONT)SendMessageW(pData->hList, WM_GETFONT, 0, 0);
+                HFONT oldFont = nullptr;
+                if (hFont) oldFont = (HFONT)SelectObject(memDC, hFont);
+
+                SetBkMode(memDC, TRANSPARENT);
+                SetTextColor(memDC, GetSysColor(COLOR_WINDOWTEXT));
+
+                const std::wstring* texts[4] = {
+                    &pData->allTimeStr,
+                    &pData->downStr,
+                    &pData->upStr,
+                    &pData->totalStr
+                };
+
+                int scrollX = GetScrollPos(pData->hList, SB_HORZ);
+                int curX = -scrollX;
+
+                for (int c = 0; c < 4; c++) {
+                    int w = ListView_GetColumnWidth(pData->hList, c);
+                    RECT cellRc = { curX, 0, curX + w, rc.bottom };
+
+                    // Vertical gridline between columns
+                    if (c < 3) {
+                        MoveToEx(memDC, curX + w - 1, 0, nullptr);
+                        LineTo(memDC, curX + w - 1, rc.bottom);
+                    }
+
+                    RECT textRc = cellRc;
+                    textRc.left += 6;
+                    textRc.right -= 6;
+                    if (textRc.right > textRc.left) {
+                        DrawTextW(memDC, texts[c]->c_str(), -1, &textRc,
+                                  DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    }
+
+                    curX += w;
+                }
+
+                if (oldFont) SelectObject(memDC, oldFont);
+            }
+
+            SelectObject(memDC, oldPen);
+            DeleteObject(gridPen);
+
+            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
+            SelectObject(memDC, oldBmp);
+            DeleteObject(memBmp);
+            DeleteDC(memDC);
+
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+
+        case WM_NCDESTROY:
+            delete pData;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+            break;
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
 INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     static TrafficGateApp* pApp = nullptr;
 
@@ -794,14 +1048,20 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
             SendMessageW(hList, LVM_INSERTCOLUMNW, 2, (LPARAM)&lvc);
 
             lvc.iSubItem = 3;
-            lvc.pszText = (LPWSTR)L"Total";
+            lvc.pszText = (LPWSTR)L"Combined";
             lvc.cx = wLast;
             SendMessageW(hList, LVM_INSERTCOLUMNW, 3, (LPARAM)&lvc);
+
+            uint64_t totalDown = 0;
+            uint64_t totalUp = 0;
 
             if (pApp) {
                 auto history = pApp->GetUsageHistory();
                 int idx = 0;
                 for (const auto& rec : history) {
+                    totalDown += rec.downBytes;
+                    totalUp += rec.upBytes;
+
                     LVITEMW lvi = { 0 };
                     lvi.mask = LVIF_TEXT;
                     lvi.iItem = idx;
@@ -822,7 +1082,58 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
                 }
             }
             ListView_SetColumnWidth(hList, 3, LVSCW_AUTOSIZE_USEHEADER);
+
+            // Determine row height
+            int rowHeight = 0;
+            RECT rItem;
+            if (ListView_GetItemRect(hList, 0, &rItem, LVIR_BOUNDS)) {
+                rowHeight = rItem.bottom - rItem.top;
+            }
+            if (rowHeight <= 0) {
+                rowHeight = HIWORD(SendMessageW(hList, LVM_GETITEMSPACING, TRUE, 0));
+            }
+            if (rowHeight <= 0) {
+                rowHeight = 20;
+            }
+
+            RECT crc;
+            GetClientRect(hList, &crc);
+
+            SetWindowLongPtrW(hList, GWL_STYLE, GetWindowLongPtrW(hList, GWL_STYLE) | WS_CLIPCHILDREN);
+
+            HistoryFooterData* pData = new HistoryFooterData();
+            pData->hList = hList;
+            pData->allTimeStr = L"All time";
+            pData->downStr = FormatBytes(totalDown);
+            pData->upStr = FormatBytes(totalUp);
+            pData->totalStr = FormatBytes(totalDown + totalUp);
+
+            int footerY = crc.bottom - rowHeight;
+            HWND hFooter = CreateWindowExW(0, L"TrafficGate_HistoryFooter", L"",
+                                          WS_CHILD | WS_VISIBLE,
+                                          0, footerY, crc.right, rowHeight,
+                                          hList, (HMENU)IDC_HISTORY_TOTAL,
+                                          pApp ? pApp->hInst : nullptr, nullptr);
+
+            SetWindowLongPtrW(hFooter, GWLP_USERDATA, (LONG_PTR)pData);
+
             return TRUE;
+        }
+
+        case WM_NOTIFY: {
+            NMHDR* pnm = (NMHDR*)lParam;
+            if (pnm && pnm->idFrom == 0) {
+                HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
+                if (hList && pnm->hwndFrom == ListView_GetHeader(hList)) {
+                    if (pnm->code == HDN_ITEMCHANGEDW || pnm->code == HDN_TRACKW) {
+                        HWND hFooter = GetDlgItem(hList, IDC_HISTORY_TOTAL);
+                        if (hFooter) {
+                            InvalidateRect(hFooter, nullptr, TRUE);
+                        }
+                    }
+                }
+            }
+            break;
         }
 
         case WM_COMMAND: {
@@ -835,6 +1146,18 @@ INT_PTR CALLBACK TrafficGateApp::UsageHistoryDlgProc(HWND hDlg, UINT msg, WPARAM
                     HWND hList = GetDlgItem(hDlg, IDC_HISTORY_LIST);
                     SendMessageW(hList, LVM_DELETEALLITEMS, 0, 0);
                     ListView_SetColumnWidth(hList, 3, LVSCW_AUTOSIZE_USEHEADER);
+
+                    HWND hFooter = GetDlgItem(hList, IDC_HISTORY_TOTAL);
+                    if (hFooter) {
+                        HistoryFooterData* pData = (HistoryFooterData*)GetWindowLongPtrW(hFooter, GWLP_USERDATA);
+                        if (pData) {
+                            std::wstring zeroStr = FormatBytes(0);
+                            pData->downStr = zeroStr;
+                            pData->upStr = zeroStr;
+                            pData->totalStr = zeroStr;
+                            InvalidateRect(hFooter, nullptr, TRUE);
+                        }
+                    }
                 }
                 return TRUE;
             } else if (id == IDOK || id == IDCANCEL) {
@@ -934,6 +1257,14 @@ LRESULT CALLBACK TrafficGateApp::DaemonWndProc(HWND hWnd, UINT msg, WPARAM wPara
                     app.ToggleRunAtStartup();
                     break;
 
+                case IDM_CHECK_UPDATE:
+                    app.CheckForUpdates(false);
+                    break;
+
+                case IDM_RESTART:
+                    app.Restart();
+                    break;
+
                 case IDM_EXIT:
                     PostQuitMessage(0);
                     break;
@@ -1020,6 +1351,15 @@ bool TrafficGateApp::Initialize(HINSTANCE hInstance) {
     wct.lpszClassName = APP_WNDCLASS_TASKBAR;
     wct.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     RegisterClassExW(&wct);
+
+    // Register History Footer Window Class
+    WNDCLASSEXW wcf = { 0 };
+    wcf.cbSize = sizeof(wcf);
+    wcf.lpfnWndProc = FooterWndProc;
+    wcf.hInstance = hInst;
+    wcf.lpszClassName = L"TrafficGate_HistoryFooter";
+    wcf.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    RegisterClassExW(&wcf);
 
     CreateTaskbarWindow();
 
