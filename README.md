@@ -6,7 +6,7 @@ Use it when you want to see how fast your connection really is, keep a download 
 
 ![TrafficGate Icon](docs/icon.png)
 
-**[Download the latest release](../../releases/latest)**, run `TrafficGate_v<version>.exe`, accept the UAC prompt, and right-click the tray icon.
+**[Download the latest release](../../releases/latest)**, run `TrafficGate.exe`, accept the UAC prompt, and right-click the tray icon.
 
 ## Screenshots
 
