@@ -39,9 +39,9 @@ There are no automated tests. After a change, run the exe on Windows 10 and chec
 ## Versioning and releases
 
 - The version lives in `src/TrafficGate.h` (`APP_VERSION`, `APP_VERSION_STR`) and `src/TrafficGate.rc` (`FILEVERSION`, `PRODUCTVERSION`, `FileVersion`, `ProductVersion`, `OriginalFilename`). `build.ps1` rewrites all of them; do not edit them by hand.
-- The binary is named `TrafficGate_v<major>.<minor>.exe` (two numbers; `build.ps1` bumps the minor part). `-NoVersionBump` rebuilds unchanged, `-Version X.Y` sets it.
-- A release attaches the exe only. No source archive, no docs bundle; the source is the tag.
-- Tag releases `v<version>` (for example `v1.10`).
+- The binary is named `TrafficGate_v<major>.<minor>.exe` (two numbers; `build.ps1` bumps the minor part). `-NoVersionBump` rebuilds unchanged, `-Version X.Y` sets it. The leading digit moves only when the user asks for it.
+- A release attaches the exe only, renamed to `TrafficGate.exe`. No source archive, no docs bundle; the source is the tag.
+- Tag releases with the bare version, no `v` (for example `1.10`), and title them `TrafficGate v<version>`.
 
 ## Design decisions you must not undo by accident
 
